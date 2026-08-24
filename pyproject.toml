@@ -19,7 +19,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=9.1.1"]
+# Do NOT pin pytest tighter than this. seleniumbase hard-pins the exact pytest
+# it wants and the pin is version-dependent -- pytest==8.4.2 on Python 3.10,
+# pytest==9.1.1 on 3.11 and newer -- so demanding >=9.1.1 makes the whole
+# install unresolvable on 3.10.
+dev = ["pytest>=8.4.2"]
 # Pin a chromedriver matching your Chrome to run the integration suite locally:
 #   pip install "chromedriver-py==<your chrome major>.*"
 test-browser = ["chromedriver-py"]

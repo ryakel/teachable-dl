@@ -23,7 +23,12 @@ pytestmark = pytest.mark.integration
 
 
 def _make_driver():
-    """A plain headless Chrome, or ``None`` if this machine cannot provide one.
+    """A plain headless Chrome, plus the reason if one cannot be started.
+
+    Returns ``(driver, reason)``. Swallowing the failure and reporting a bare
+    "no browser" made a CI run that skipped everything indistinguishable from a
+    misconfiguration, which is exactly what happened: the whole suite skipped
+    and the log said nothing about why.
 
     Deliberately not SeleniumBase's undetected mode: these tests are about our
     parsing logic in a real DOM, and uc mode wants to download its own driver.
@@ -31,8 +36,8 @@ def _make_driver():
     try:
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
-    except ImportError:
-        return None
+    except ImportError as exc:
+        return None, f"selenium is not installed: {exc}"
 
     options = Options()
     binary = os.environ.get("TEACHABLE_DL_TEST_CHROME")
@@ -42,7 +47,6 @@ def _make_driver():
                      "--disable-gpu", "--window-size=1280,1024"):
         options.add_argument(argument)
 
-    service = None
     driver_path = os.environ.get("TEACHABLE_DL_TEST_CHROMEDRIVER")
     if not driver_path:
         # chromedriver-py is an easy way to pin a driver matching your Chrome:
@@ -54,24 +58,37 @@ def _make_driver():
         except ImportError:
             driver_path = None
 
+    attempts = []
     if driver_path:
         from selenium.webdriver.chrome.service import Service
 
-        service = Service(driver_path)
+        attempts.append(("explicit chromedriver", lambda: Service(driver_path)))
+    # Selenium Manager can usually fetch a matching driver by itself; try it as
+    # a fallback so a mismatched explicit driver is not fatal.
+    attempts.append(("selenium manager", lambda: None))
 
-    try:
-        return webdriver.Chrome(options=options, service=service)
-    except Exception:
-        return None
+    reasons = []
+    for label, build_service in attempts:
+        try:
+            return webdriver.Chrome(options=options, service=build_service()), None
+        except Exception as exc:
+            reasons.append(f"{label}: {type(exc).__name__}: {str(exc).splitlines()[0]}")
+
+    detail = "; ".join(reasons)
+    return None, (
+        f"could not start Chrome (binary={binary or 'default'}, "
+        f"driver={driver_path or 'auto'}) -- {detail}"
+    )
 
 
 @pytest.fixture(scope="module")
 def driver():
-    instance = _make_driver()
+    instance, reason = _make_driver()
     if instance is None:
         pytest.skip(
-            "no usable Chrome/ChromeDriver pair; set TEACHABLE_DL_TEST_CHROME to a "
-            "Chrome binary whose version matches the chromedriver on PATH"
+            f"no usable Chrome/ChromeDriver pair: {reason}. Set "
+            "TEACHABLE_DL_TEST_CHROME and TEACHABLE_DL_TEST_CHROMEDRIVER to a "
+            "matching pair, or pip install 'chromedriver-py==<chrome major>.*'"
         )
     yield instance
     instance.quit()

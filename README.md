@@ -411,13 +411,21 @@ kept for backwards compatibility.
 Run the tests with:
 
 ```sh
-pip install pytest
+pip install -e ".[dev]"
 python -m pytest
 ```
 
-The suite covers the pure logic — filename sanitizing, yt-dlp options, HTML
-rewriting, curriculum grouping and argument handling — and needs no browser or
-network access.
+The unit suite covers the pure logic — filename sanitizing, yt-dlp options, HTML
+rewriting, URL safety, curriculum grouping and argument handling — and needs no
+browser or network access.
+
+There is also a browser-driven integration suite that runs the real parsers
+against a synthetic Teachable-like site served from localhost, so template
+detection and curriculum scraping can be tested without a Teachable account. It
+skips automatically when Chrome is unavailable.
+
+See [TESTING.md](TESTING.md) for how to run every layer, including a staged
+plan for testing against a real account.
 
 <!-- ROADMAP -->
 

@@ -20,6 +20,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=9.1.1"]
+# Pin a chromedriver matching your Chrome to run the integration suite locally:
+#   pip install "chromedriver-py==<your chrome major>.*"
+test-browser = ["chromedriver-py"]
 
 [project.scripts]
 teachable-dl = "teachable_dl.cli:main"
@@ -29,3 +32,6 @@ packages = ["teachable_dl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: drives a real browser against the local fixture site; skipped when no usable ChromeDriver/Chrome pair is available",
+]

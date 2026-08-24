@@ -96,6 +96,14 @@ def build_parser():
                                "a school you host yourself.")
 
     misc = parser.add_argument_group("misc")
+    misc.add_argument("--dry-run", action="store_true",
+                      help="Log in and print the curriculum this would download, "
+                           "then stop. Writes nothing. Use this first: it exercises "
+                           "login, Cloudflare and template detection in seconds "
+                           "without downloading anything.")
+    misc.add_argument("--limit", type=int, metavar="N",
+                      help="Download at most N lectures per course. Use --limit 1 to "
+                           "smoke-test the full pipeline on a single lecture.")
     misc.add_argument("--complete-lecture", action="store_true",
                       help="Mark each lecture complete after downloading it")
     misc.add_argument("-v", "--verbose", action="count", default=0,
@@ -166,6 +174,8 @@ def settings_from_args(args, email, password, totp_secret):
         resume=not args.no_resume,
         allow_private_hosts=args.allow_private_hosts,
         max_file_bytes=int(args.max_file_size * 1024 * 1024 * 1024),
+        dry_run=args.dry_run,
+        limit=args.limit,
         complete_lecture=args.complete_lecture,
         save_pdf=args.save_pdf,
         save_screenshot=args.save_screenshot,

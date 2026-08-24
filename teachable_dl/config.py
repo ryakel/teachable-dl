@@ -43,6 +43,10 @@ class Settings:
     link_refresh_attempts: int = 3
     resume: bool = True
 
+    # Testing / triage
+    dry_run: bool = False
+    limit: int | None = None
+
     # Extras
     complete_lecture: bool = False
     save_pdf: bool = False

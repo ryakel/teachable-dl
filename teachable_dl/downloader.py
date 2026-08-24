@@ -111,6 +111,20 @@ class CourseDownloader:
         self.browser.handle_cloudflare_if_present()
 
         course = CurriculumParser(self.browser, self.settings).parse(course_url)
+
+        if self.settings.limit is not None:
+            keep = max(0, self.settings.limit)
+            if len(course.lectures) > keep:
+                logger.info(
+                    "Limiting to the first %s of %s lecture(s)", keep, len(course.lectures)
+                )
+                course.lectures = course.lectures[:keep]
+
+        if self.settings.dry_run:
+            self._print_plan(course, course_url)
+            return {"title": course.title, "url": course_url,
+                    "template": course.template, "lectures": [], "dry_run": True}
+
         course_root = os.path.join(self.settings.output_dir, course.title)
         os.makedirs(course_root, exist_ok=True)
         logger.info("Saving to %s", course_root)
@@ -160,6 +174,43 @@ class CourseDownloader:
 
         logger.info("Finished course: %s", course.title)
         return manifest
+
+    def _print_plan(self, course, course_url):
+        """Show what a real run would download, without touching the disk."""
+        root = os.path.join(self.settings.output_dir, course.title)
+        lines = [
+            "",
+            "Dry run - nothing was downloaded.",
+            f"  Course   : {course.title}",
+            f"  URL      : {course_url}",
+            f"  Template : {course.template}",
+            f"  Would write to: {root}",
+            "",
+        ]
+
+        current = None
+        for lecture in course.lectures:
+            if lecture.chapter != current:
+                current = lecture.chapter
+                lines.append(f"  {current}")
+            lines.append(f"      {lecture.basename}")
+
+        chapters = len({lecture.chapter for lecture in course.lectures})
+        lines.append("")
+        lines.append(f"  {len(course.lectures)} lecture(s) across {chapters} chapter(s)")
+
+        if not course.lectures:
+            lines.append(
+                "  No lectures were found. If the course opens normally in a browser, "
+                "this is a template the parser does not understand yet."
+            )
+        if course.template == "generic":
+            lines.append(
+                "  (Parsed with the generic fallback: chapter names come from nearby "
+                "headings, so check they look right before downloading.)"
+            )
+        lines.append("")
+        print("\n".join(lines))
 
     def _save_course_image(self, course, course_root):
         if not course.image_url:

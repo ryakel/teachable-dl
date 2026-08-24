@@ -112,3 +112,12 @@ def test_partial_download_is_not_mistaken_for_a_finished_one(tmp_path):
 def test_empty_file_is_not_a_finished_download(tmp_path):
     (tmp_path / "01-Intro.mp4").write_bytes(b"")
     assert find_existing_video(str(tmp_path), "01-Intro") is None
+
+
+def test_deprecated_all_subs_alias_is_not_used(settings, with_ffmpeg):
+    """yt-dlp hides --all-subs (SUPPRESS_HELP); subtitleslangs is the real option."""
+    opts = build_ydl_opts(settings, "out", {}, want_subtitles=True)
+    assert "allsubtitles" not in opts
+    assert opts["subtitleslangs"] == ["all"]
+    assert opts["writesubtitles"] is True
+    assert opts["skip_download"] is True

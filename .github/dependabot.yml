@@ -1,0 +1,19 @@
+version: 2
+
+updates:
+  # yt-dlp in particular goes stale quickly: when a video host changes its
+  # player, an out-of-date yt-dlp stops extracting streams.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci"

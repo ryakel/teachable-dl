@@ -1,5 +1,19 @@
-selenium>=4.11.2
-requests>=2.31.0
-yt-dlp>=2024.1.0
-seleniumbase>=4.20.8
-pyotp>=2.9.0
+# Floors are set to the versions this fork is tested against.
+#
+# These are deliberately current rather than permissive: several closed upstream
+# issues ("ChromeDriver only supports Chrome version 112", "Not working in
+# Chrome 115", "Not Working in Chrome 119") were nothing but a stale selenium or
+# seleniumbase, and an out-of-date yt-dlp breaks video extraction whenever the
+# host changes its player.
+#
+# Requires Python 3.10 or newer.
+
+selenium>=4.47.0
+seleniumbase>=4.52.2
+
+# Keep this one current above all others; `pip install -U yt-dlp` is the first
+# thing to try if videos suddenly stop downloading.
+yt-dlp>=2026.8.19
+
+requests>=2.34.2
+pyotp>=2.10.0

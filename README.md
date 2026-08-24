@@ -157,6 +157,24 @@ source env/bin/activate
 pip install -r requirements.txt
 ```
 
+### Keeping dependencies current
+
+Dependency floors are set to the versions this fork is tested against, and
+Dependabot raises a weekly pull request to keep them moving.
+
+`yt-dlp` is the one worth updating by hand between releases. When a video host
+changes its player, an out-of-date `yt-dlp` stops extracting streams, and that
+looks identical to the tool being broken:
+
+```sh
+python3 -m pip install -U yt-dlp
+```
+
+Several closed upstream issues ("ChromeDriver only supports Chrome version 112",
+"Not working in Chrome 115", "Not Working in Chrome 119") were nothing more than
+a stale `selenium` or `seleniumbase`, so `pip install -U -r requirements.txt` is
+worth trying before filing a bug.
+
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 <!-- USAGE EXAMPLES -->

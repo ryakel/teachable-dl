@@ -14,6 +14,7 @@ session is rebuilt (and re-authenticated by the caller) instead of poisoning the
 rest of the run.
 """
 
+import base64
 import logging
 import time
 
@@ -46,6 +47,33 @@ _DEAD_SESSION_MARKERS = (
 
 class SessionLostError(RuntimeError):
     """Raised when the underlying browser session can no longer be used."""
+
+
+def render_pdf(driver):
+    """Return the current page as PDF bytes, or ``None`` if the browser cannot.
+
+    There is no ``save_print_page`` on a Selenium or SeleniumBase driver -- the
+    original code called one, which is why saving a page as PDF raised
+    ``AttributeError`` the moment it was wired up.  Two real APIs exist and
+    neither works everywhere, so try both:
+
+    * ``Page.printToPDF`` over CDP, which Chrome supports whether or not it is
+      headless, but which only exists on Chromium-based drivers.
+    * The W3C ``print_page`` endpoint, which ChromeDriver serves only in
+      headless mode.
+    """
+    try:
+        result = driver.execute_cdp_cmd("Page.printToPDF", {"printBackground": True})
+        return base64.b64decode(result["data"])
+    except Exception as exc:
+        logger.debug("Page.printToPDF unavailable: %s", exc)
+
+    try:
+        return base64.b64decode(driver.print_page())
+    except Exception as exc:
+        logger.debug("print_page unavailable: %s", exc)
+
+    return None
 
 
 def is_dead_session_error(exc):

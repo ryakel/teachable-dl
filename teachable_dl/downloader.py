@@ -11,7 +11,7 @@ from selenium.webdriver.remote.webdriver import By
 from . import __version__, offline
 from .attachments import AttachmentDownloader, filename_from_response
 from .auth import Authenticator, LoginError
-from .browser import Browser, SessionLostError, is_dead_session_error
+from .browser import Browser, SessionLostError, is_dead_session_error, render_pdf
 from .media import MediaDownloader
 from .templates import CurriculumParser
 
@@ -391,11 +391,21 @@ class CourseDownloader:
         if self.settings.resume and os.path.isfile(target) and os.path.getsize(target) > 0:
             logger.info("Skipping existing PDF: %s", os.path.basename(target))
             return
+        data = render_pdf(self.browser.driver)
+        if not data:
+            logger.warning(
+                "Could not save %s as PDF: this browser will not print to PDF. "
+                "Try --headless, or use --save-screenshot instead.",
+                lecture.title,
+            )
+            return
         try:
-            self.browser.driver.save_print_page(target)
-            logger.info("Saved page as PDF: %s", os.path.basename(target))
-        except Exception as exc:
-            logger.warning("Could not save %s as PDF: %s", lecture.title, exc)
+            with open(target, "wb") as handle:
+                handle.write(data)
+        except OSError as exc:
+            logger.warning("Could not write %s: %s", target, exc)
+            return
+        logger.info("Saved page as PDF: %s", os.path.basename(target))
 
     def _save_screenshot(self, lecture, output_path):
         """#39: a full-page PNG, handy on tablets where HTML is awkward."""

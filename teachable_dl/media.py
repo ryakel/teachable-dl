@@ -110,7 +110,8 @@ def build_ydl_opts(settings, output_template, headers, want_subtitles=False):
         opts.update(
             {
                 "writesubtitles": True,
-                "allsubtitles": True,
+                # "allsubtitles" is yt-dlp's hidden --all-subs alias; the
+                # supported spelling is subtitleslangs.
                 "subtitleslangs": ["all"],
                 "skip_download": True,
             }

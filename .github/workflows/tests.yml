@@ -89,20 +89,38 @@ jobs:
         id: chrome
         with:
           chrome-version: stable
-          install-chromedriver: true
+          # Deliberately NOT installing this action's chromedriver. Asking it
+          # for both gave a browser and a driver from different channels
+          # (chromium stable paired with chromedriver 152), and the mismatch
+          # made every integration test skip.
+          install-chromedriver: false
 
       - name: Install the package
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
+      - name: Install a chromedriver matching the installed Chrome
+        # Pin the driver to the browser's own major version rather than trusting
+        # two independent "stable" channels to agree. If no such release exists
+        # yet, fall through and let Selenium Manager resolve one.
+        run: |
+          CHROME="${{ steps.chrome.outputs.chrome-path }}"
+          "$CHROME" --version
+          MAJOR="$("$CHROME" --version | grep -oE '[0-9]+' | head -1)"
+          echo "Chrome major version: $MAJOR"
+          python -m pip install --pre "chromedriver-py==${MAJOR}.*" \
+            || echo "No chromedriver-py for Chrome $MAJOR; Selenium Manager will resolve one."
+
       - name: Run the browser integration tests
         # -rs prints the reason for any skip. A version-mismatched driver makes
         # every test skip, which otherwise looks identical to a pass, and the
         # log said nothing about why.
+        #
+        # Only the browser is pinned here: the driver is discovered from
+        # chromedriver-py, with Selenium Manager as the fallback.
         env:
           TEACHABLE_DL_TEST_CHROME: ${{ steps.chrome.outputs.chrome-path }}
-          TEACHABLE_DL_TEST_CHROMEDRIVER: ${{ steps.chrome.outputs.chromedriver-path }}
         run: |
           set -o pipefail
           python -m pytest tests/test_integration.py -v -rs 2>&1 | tee result.txt

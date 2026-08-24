@@ -1,0 +1,298 @@
+"""Video and subtitle downloading via yt-dlp.
+
+Four upstream issues are addressed here.
+
+#59 / #51 (*"Download Speed is very slow"*)
+    The old options dict passed ``"concurrentfragments": 15``.  That is not a
+    yt-dlp option -- the real name is ``concurrent_fragment_downloads`` -- and
+    yt-dlp silently ignores unknown keys.  Every HLS stream was therefore
+    fetched one fragment at a time, which is exactly the 100-500 KB/s the
+    reporters saw on a 200 Mb/s line.
+
+#41 (*"Downloaded mp4 video will not play"*)
+    ``FFmpegVideoConvertor`` was applied unconditionally while the format
+    selector asked for separate video+audio streams.  Without ffmpeg on PATH
+    neither the merge nor the conversion happens, and yt-dlp leaves behind a
+    video-only (or fragment) file that still carries an ``.mp4`` name.  We now
+    detect ffmpeg, pick a single-file format when it is missing, and validate
+    the result.
+
+#44 (*403 Forbidden on some videos*) and #55 (*videos over ~100 minutes fail*)
+    Hotmart hands out time-limited signed playlist URLs, and the request headers
+    were hardcoded to ``player.hotmart.com`` regardless of the actual embed
+    host.  A three-hour video simply outlives its token.  Downloads are now
+    retried against a freshly extracted link, resuming from the fragments
+    already on disk.
+"""
+
+import logging
+import os
+import shutil
+from urllib.parse import urljoin, urlparse
+
+import requests
+import yt_dlp
+
+logger = logging.getLogger(__name__)
+
+_FFMPEG_CHECKED = None
+
+
+def ffmpeg_available():
+    """Is ffmpeg on PATH? Cached, because we ask once per lecture."""
+    global _FFMPEG_CHECKED
+    if _FFMPEG_CHECKED is None:
+        _FFMPEG_CHECKED = shutil.which("ffmpeg") is not None
+        if not _FFMPEG_CHECKED:
+            logger.warning(
+                "ffmpeg was not found on PATH. Falling back to single-file formats: "
+                "quality may be lower and some streams cannot be downloaded at all. "
+                "Install ffmpeg for the best results."
+            )
+    return _FFMPEG_CHECKED
+
+
+def headers_for_embed(embed_url, user_agent):
+    """Build Origin/Referer from the embed that actually served the stream.
+
+    Hardcoding ``player.hotmart.com`` makes every non-Hotmart embed 403 (#44).
+    """
+    headers = {"User-Agent": user_agent}
+    if embed_url:
+        parsed = urlparse(embed_url)
+        if parsed.scheme and parsed.netloc:
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+            headers["Origin"] = origin
+            headers["Referer"] = origin + "/"
+    return headers
+
+
+def build_ydl_opts(settings, output_template, headers, want_subtitles=False):
+    """Assemble yt-dlp options. Kept pure so the option names stay under test."""
+    has_ffmpeg = ffmpeg_available()
+
+    if has_ffmpeg:
+        # Let yt-dlp merge the best video and audio it can find; the container
+        # is decided by merge_output_format, so no extra conversion pass.
+        video_format = "bestvideo*+bestaudio/best"
+    else:
+        # No merger available, so only ever ask for a stream that is already
+        # muxed. Anything else produces the unplayable file reported in #41.
+        video_format = "best[ext=mp4]/best"
+
+    opts = {
+        "format": video_format,
+        "http_headers": dict(headers),
+        "outtmpl": output_template,
+        "verbose": settings.verbose,
+        "quiet": not settings.verbose,
+        "noprogress": False,
+        "ignoreerrors": False,
+        # -- #59: the actual, correctly spelled parallelism knob.
+        "concurrent_fragment_downloads": max(1, int(settings.concurrent_fragments)),
+        # -- #55: survive a flaky or expiring CDN for the length of a long video.
+        "retries": settings.retries,
+        "fragment_retries": settings.fragment_retries,
+        "file_access_retries": 5,
+        "extractor_retries": 3,
+        "retry_sleep_functions": {"http": lambda n: min(2 ** n, 30)},
+        "skip_unavailable_fragments": False,
+        "continuedl": settings.resume,
+        "keepvideo": False,
+        "overwrites": False,
+    }
+
+    if has_ffmpeg:
+        opts["merge_output_format"] = "mp4"
+        opts["postprocessors"] = [{"key": "FFmpegMetadata"}]
+
+    if want_subtitles:
+        opts.update(
+            {
+                "writesubtitles": True,
+                "allsubtitles": True,
+                "subtitleslangs": ["all"],
+                "skip_download": True,
+            }
+        )
+
+    return opts
+
+
+def _looks_complete(path):
+    """A finished download exists, is non-empty, and left no partial siblings."""
+    if not os.path.isfile(path):
+        return False
+    if os.path.getsize(path) == 0:
+        return False
+    if os.path.exists(path + ".part") or os.path.exists(path + ".ytdl"):
+        return False
+    return True
+
+
+def find_existing_video(output_path, basename):
+    """Return an already-downloaded video for this lecture, if there is one."""
+    for extension in (".mp4", ".mkv", ".webm", ".m4a", ".mov"):
+        candidate = os.path.join(output_path, basename + extension)
+        if _looks_complete(candidate):
+            return candidate
+    return None
+
+
+class MediaDownloader:
+    def __init__(self, settings):
+        self.settings = settings
+
+    # ----------------------------------------------------------------- video
+
+    def download_video(self, link, basename, output_path, embed_url=None, refresh_link=None):
+        """Download one lecture video, refreshing the signed URL if it expires.
+
+        ``refresh_link`` is a zero-argument callable that re-extracts the stream
+        URL from the still-open lecture page.  Signed Hotmart URLs are only valid
+        for a while, so a three-hour download (#55) or a slow connection (#44)
+        will outlive the token it started with.
+        """
+        if self.settings.resume:
+            existing = find_existing_video(output_path, basename)
+            if existing:
+                logger.info("Skipping already downloaded video: %s", os.path.basename(existing))
+                return existing
+
+        os.makedirs(output_path, exist_ok=True)
+        template = os.path.join(output_path, basename + ".%(ext)s")
+        attempts = max(1, self.settings.link_refresh_attempts)
+        current_link = link
+        last_error = None
+
+        for attempt in range(1, attempts + 1):
+            headers = headers_for_embed(embed_url, self.settings.user_agent)
+            opts = build_ydl_opts(self.settings, template, headers)
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    ydl.download([current_link])
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "Video download failed (attempt %s/%s) for %s: %s",
+                    attempt,
+                    attempts,
+                    basename,
+                    exc,
+                )
+                if attempt < attempts and refresh_link is not None:
+                    # The most common cause is an expired signed URL, so ask the
+                    # page for a new one and resume from the fragments on disk.
+                    logger.info("Refreshing the stream URL and resuming")
+                    try:
+                        refreshed = refresh_link()
+                    except Exception as refresh_exc:
+                        logger.warning("Could not refresh the stream URL: %s", refresh_exc)
+                        refreshed = None
+                    if refreshed:
+                        current_link = refreshed
+                    continue
+                if attempt < attempts:
+                    continue
+                break
+
+            downloaded = find_existing_video(output_path, basename)
+            if downloaded:
+                logger.info("Downloaded video: %s", os.path.basename(downloaded))
+                return downloaded
+
+            last_error = RuntimeError(
+                "yt-dlp reported success but produced no usable file "
+                "(a leftover .part usually means ffmpeg could not merge the streams)"
+            )
+            logger.warning("%s", last_error)
+
+        logger.error("Could not download video %s: %s", basename, last_error)
+        return None
+
+    # ------------------------------------------------------------- subtitles
+
+    def download_subtitles(self, link, basename, output_path, embed_url=None):
+        """Fetch every subtitle track for a lecture.
+
+        yt-dlp cannot write these itself for Hotmart, so we resolve the playlist
+        by hand. The previous implementation used ``info_json`` even when
+        ``extract_info`` had raised (a guaranteed ``NameError``) and pulled the
+        media URL from a fixed line number of the m3u8.
+        """
+        headers = headers_for_embed(embed_url, self.settings.user_agent)
+        opts = build_ydl_opts(self.settings, os.path.join(output_path, basename), headers,
+                              want_subtitles=True)
+
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.sanitize_info(ydl.extract_info(link, download=False))
+        except Exception as exc:
+            logger.warning("Could not list subtitles for %s: %s", basename, exc)
+            return []
+
+        requested = (info or {}).get("requested_subtitles") or {}
+        if not requested:
+            logger.debug("No subtitles offered for %s", basename)
+            return []
+
+        written = []
+        for lang, sub_info in requested.items():
+            url = sub_info.get("url")
+            extension = sub_info.get("ext", "vtt")
+            if not url:
+                continue
+
+            filename = f"{basename}.{lang}.{extension}"
+            file_path = os.path.join(output_path, filename)
+            if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
+                logger.info("Skipping existing subtitle: %s", filename)
+                written.append(file_path)
+                continue
+
+            content = self._fetch_subtitle(url, headers)
+            if content is None:
+                continue
+            try:
+                with open(file_path, "wb") as handle:
+                    handle.write(content)
+            except OSError as exc:
+                logger.warning("Could not write subtitle %s: %s", filename, exc)
+                continue
+            logger.info("Downloaded subtitle: %s", filename)
+            written.append(file_path)
+
+        return written
+
+    def _fetch_subtitle(self, url, headers):
+        """Resolve a subtitle URL, following an m3u8 playlist if that is what it is."""
+        try:
+            response = requests.get(url, headers=headers, timeout=30)
+            response.raise_for_status()
+        except Exception as exc:
+            logger.warning("Could not fetch subtitle playlist: %s", exc)
+            return None
+
+        body = response.text
+        if not body.lstrip().startswith("#EXTM3U"):
+            return response.content
+
+        # It is a playlist: the first non-comment line is the actual track.
+        target = None
+        for line in body.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                target = line
+                break
+
+        if target is None:
+            logger.warning("Subtitle playlist contained no media segment")
+            return None
+
+        try:
+            resolved = requests.get(urljoin(url, target), headers=headers, timeout=30)
+            resolved.raise_for_status()
+        except Exception as exc:
+            logger.warning("Could not fetch subtitle track: %s", exc)
+            return None
+        return resolved.content

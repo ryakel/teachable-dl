@@ -21,17 +21,25 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install dependencies
+      - name: Install the package
+        # Installing rather than relying on the package sitting in cwd, so a
+        # broken [project.scripts] or packaging config fails here instead of
+        # shipping green.
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest
+          python -m pip install -e ".[dev]"
 
       - name: Run tests
         # The suite is pure logic: no browser, no network.
         run: python -m pytest -q
 
-      - name: Check the CLI starts
+      - name: Check both entry points start
         run: |
           python main.py --version
           python main.py --help > /dev/null
+          teachable-dl --version
+          teachable-dl --help > /dev/null
+
+      - name: Check the package imports from an unrelated directory
+        # Catches a module that only resolves because ./teachable_dl is in cwd.
+        run: cd "$RUNNER_TEMP" && python -c "import teachable_dl; print(teachable_dl.__version__)"

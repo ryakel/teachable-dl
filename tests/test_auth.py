@@ -1,7 +1,9 @@
 """Login handling -- upstream #56 (accounts that require an OTP)."""
 
 import pytest
+from selenium.webdriver.remote.webdriver import By
 
+from tests.conftest import FakeElement
 from teachable_dl.auth import (
     EMAIL_SELECTORS,
     OTP_SELECTORS,
@@ -39,19 +41,55 @@ def test_a_course_page_is_not_mistaken_for_a_login_page():
     assert not looks_like_login_page(None)
 
 
-def test_sso_login_forms_are_covered_by_the_selectors():
-    """The old code only knew id=email / id=password, which SSO pages do not use."""
-    email_selectors = [selector for _, selector in EMAIL_SELECTORS]
-    password_selectors = [selector for _, selector in PASSWORD_SELECTORS]
-    assert "input[type='email']" in email_selectors
-    assert "input[type='password']" in password_selectors
-    assert len(EMAIL_SELECTORS) > 1 and len(PASSWORD_SELECTORS) > 1
+def test_an_sso_login_form_is_actually_found(browser_factory):
+    """#56: SSO pages carry none of id=email / id=password / name=commit.
+
+    This drives the real lookup against a fake DOM rather than asserting that a
+    string appears in the selector list, so it fails if the lookup logic breaks
+    even when the constants are untouched.
+    """
+    email = FakeElement()
+    password = FakeElement()
+    browser = browser_factory(
+        {
+            (By.CSS_SELECTOR, "input[type='email']"): [email],
+            (By.CSS_SELECTOR, "input[type='password']"): [password],
+        }
+    )
+    assert browser.find_first(EMAIL_SELECTORS, timeout=0) is email
+    assert browser.find_first(PASSWORD_SELECTORS, timeout=0) is password
 
 
-def test_otp_detection_covers_more_than_the_legacy_field_name():
-    selectors = [selector for _, selector in OTP_SELECTORS]
-    assert "otp_code" in selectors
-    assert "input[autocomplete='one-time-code']" in selectors
+def test_a_legacy_teachable_login_form_is_still_found(browser_factory):
+    email = FakeElement()
+    browser = browser_factory({(By.ID, "email"): [email]})
+    assert browser.find_first(EMAIL_SELECTORS, timeout=0) is email
+
+
+def test_a_page_with_no_login_form_yields_nothing(browser_factory):
+    assert browser_factory({}).find_first(EMAIL_SELECTORS, timeout=0) is None
+
+
+def test_a_hidden_field_is_not_treated_as_the_login_form(browser_factory):
+    """Teachable renders an off-screen form on some pages; typing into it does nothing."""
+    hidden = FakeElement(displayed=False)
+    browser = browser_factory({(By.ID, "email"): [hidden]})
+    assert browser.find_first(EMAIL_SELECTORS, timeout=0) is None
+
+
+def test_a_modern_one_time_code_field_is_found(browser_factory):
+    """The old code only knew name=otp_code."""
+    otp = FakeElement()
+    browser = browser_factory(
+        {(By.CSS_SELECTOR, "input[autocomplete='one-time-code']"): [otp]}
+    )
+    assert browser.find_first(OTP_SELECTORS, timeout=0) is otp
+
+
+def test_the_legacy_otp_field_is_still_found(browser_factory):
+    otp = FakeElement()
+    browser = browser_factory({(By.NAME, "otp_code"): [otp]})
+    assert browser.find_first(OTP_SELECTORS, timeout=0) is otp
 
 
 def test_totp_codes_are_six_digits():

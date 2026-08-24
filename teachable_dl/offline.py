@@ -20,6 +20,7 @@ Everything here works on HTML strings and a manifest, so it is unit-testable and
 can be re-run over an existing download without touching the network.
 """
 
+import base64
 import html
 import json
 import logging
@@ -32,14 +33,71 @@ logger = logging.getLogger(__name__)
 MANIFEST_NAME = "teachable-dl-manifest.json"
 
 #: ``<a href="/courses/foo/lectures/123">`` in either quote style.
-_HREF_RE = re.compile(r"""(?P<attr>\bhref\s*=\s*)(?P<quote>["'])(?P<url>[^"']*)(?P=quote)""",
-                      re.IGNORECASE)
+#:
+#: The leading lookbehind is load-bearing. A plain ``\bhref`` also matches
+#: ``data-href=`` and ``xlink:href=``, so the rewriter used to mutate attributes
+#: that the page's own JavaScript and SVG read back.
+_HREF_RE = re.compile(
+    r"""(?<![\w:-])(?P<attr>href\s*=\s*)(?P<quote>["'])(?P<url>[^"']*)(?P=quote)""",
+    re.IGNORECASE,
+)
 _LECTURE_PATH_RE = re.compile(r"/lectures/(\d+)")
 
-#: A whole ``<iframe>`` element, self-closing or not. Iframes cannot nest, so a
-#: non-greedy match is safe.
-_IFRAME_RE = re.compile(r"<iframe\b[^>]*?/>|<iframe\b[^>]*>.*?</iframe>",
-                        re.IGNORECASE | re.DOTALL)
+#: Tag attributes, respecting quoted values. Matching ``[^>]*`` instead means a
+#: ``>`` or ``/>`` inside an attribute (``title="Lesson a/>b"``) truncates the
+#: match and corrupts the document.
+_ATTRS = r"""(?:[^>"']|"[^"]*"|'[^']*')*"""
+
+#: A whole ``<iframe>`` element. The first alternative refuses to swallow a
+#: following iframe when this one is self-closing.
+_IFRAME_RE = re.compile(
+    rf"<iframe\b{_ATTRS}>(?:(?!<iframe\b).)*?</iframe>|<iframe\b{_ATTRS}>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_SRC_RE = re.compile(rf"""\bsrc\s*=\s*(["'])(?P<src>.*?)\1""", re.IGNORECASE | re.DOTALL)
+
+#: Regions whose contents are not page markup and must never be rewritten.
+#:
+#: Teachable is a Next.js app: every page carries a ``__NEXT_DATA__`` script
+#: holding a large JSON blob that routinely contains escaped ``<iframe>`` markup
+#: and ``/lectures/<id>`` URLs. Rewriting inside it corrupted the JSON *and*
+#: consumed the video block meant for the real, visible player -- which then
+#: rendered as "no local video was downloaded". Comments and ``<noscript>``
+#: fallbacks caused the same theft.
+_OPAQUE_RE = re.compile(
+    r"<!--.*?-->"
+    r"|<script\b[^>]*>.*?</script>"
+    r"|<style\b[^>]*>.*?</style>"
+    r"|<noscript\b[^>]*>.*?</noscript>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_PLACEHOLDER_RE = re.compile("\x00TDL(\\d+)\x00")
+
+#: Inlining subtitles above this size would bloat the page; link them instead.
+_MAX_INLINE_SUBTITLE_BYTES = 512 * 1024
+
+
+def _mask_opaque(page_html):
+    """Hide scripts, styles, comments and noscript blocks from the rewriters."""
+    stored = []
+
+    def keep(match):
+        stored.append(match.group(0))
+        return f"\x00TDL{len(stored) - 1}\x00"
+
+    return _OPAQUE_RE.sub(keep, page_html), stored
+
+
+def _unmask_opaque(page_html, stored):
+    return _PLACEHOLDER_RE.sub(lambda m: stored[int(m.group(1))], page_html)
+
+
+def iframe_src(tag_html):
+    """The ``src`` of an iframe tag, with HTML entities resolved."""
+    match = _SRC_RE.search(tag_html or "")
+    return html.unescape(match.group("src").strip()) if match else ""
 
 #: Markers identifying an iframe as a video player rather than, say, an embedded PDF.
 _PLAYER_MARKERS = (
@@ -94,7 +152,8 @@ def rewrite_lecture_links(page_html, from_dir, id_to_path, course_root):
         local = relative_url(from_dir, target, course_root)
         return f'{match.group("attr")}{match.group("quote")}{local}{match.group("quote")}'
 
-    return _HREF_RE.sub(replace, page_html)
+    masked, stored = _mask_opaque(page_html)
+    return _unmask_opaque(_HREF_RE.sub(replace, masked), stored)
 
 
 def is_player_iframe(tag_html):
@@ -102,21 +161,51 @@ def is_player_iframe(tag_html):
     return any(marker in lowered for marker in _PLAYER_MARKERS)
 
 
+def subtitle_track_src(course_root, relative_path, url_fallback):
+    """Inline a WebVTT track as a data: URI so it loads from ``file://``.
+
+    Chromium treats a ``file://`` document as an opaque origin and refuses to
+    load a ``<track>`` from a sibling file unless the browser is started with
+    ``--allow-file-access-from-files``. Embedding the cues in the tag itself
+    sidesteps the origin check entirely, so captions work in both Chromium and
+    Firefox with no flags.
+    """
+    absolute = os.path.join(course_root, relative_path)
+    try:
+        size = os.path.getsize(absolute)
+        if size > _MAX_INLINE_SUBTITLE_BYTES:
+            logger.debug("Subtitle %s is too large to inline (%s bytes)", relative_path, size)
+            return url_fallback
+        with open(absolute, "rb") as handle:
+            payload = handle.read()
+    except OSError as exc:
+        logger.debug("Could not inline subtitle %s: %s", relative_path, exc)
+        return url_fallback
+
+    encoded = base64.b64encode(payload).decode("ascii")
+    return f"data:text/vtt;base64,{encoded}"
+
+
 def build_video_block(video_url, tracks):
-    """The ``<video>`` element that replaces a dead remote player (#63)."""
+    """The ``<video>`` element that replaces a dead remote player (#63).
+
+    Each track is ``(lang, track_src, link_href, is_default)``: ``track_src`` may
+    be an inlined ``data:`` URI so captions load from ``file://``, while
+    ``link_href`` always points at the real file on disk for downloading.
+    """
     track_tags = []
-    for lang, track_url, is_default in tracks:
+    for lang, track_src, _link, is_default in tracks:
         default_attr = " default" if is_default else ""
         track_tags.append(
-            f'<track kind="subtitles" src="{html.escape(track_url, quote=True)}" '
+            f'<track kind="subtitles" src="{html.escape(track_src, quote=True)}" '
             f'srclang="{html.escape(lang, quote=True)}" '
             f'label="{html.escape(lang, quote=True)}"{default_attr}>'
         )
 
     links = [f'<a href="{html.escape(video_url, quote=True)}">Open video file</a>']
-    for lang, track_url, _ in tracks:
+    for lang, _src, link, _default in tracks:
         links.append(
-            f'<a href="{html.escape(track_url, quote=True)}">Subtitles ({html.escape(lang)})</a>'
+            f'<a href="{html.escape(link, quote=True)}">Subtitles ({html.escape(lang)})</a>'
         )
 
     return (
@@ -142,23 +231,53 @@ def build_missing_block(title=""):
 
 
 def replace_player_iframes(page_html, video_blocks):
-    """Swap each player iframe for the n-th local video block.
+    """Swap each player iframe for the local video that came from it.
+
+    ``video_blocks`` is a list of ``(embed_url, block_html)`` pairs; bare
+    strings are accepted too and treated as having no embed URL.
+
+    Blocks are matched to iframes by embed URL rather than by position. Position
+    was wrong in both directions: the manifest lists videos in selector-group
+    order while the document has its own order, and a video whose download
+    failed is simply absent from the list -- so block *n* routinely landed under
+    a different lecture's player, showing the wrong video with no error at all.
 
     Non-player iframes (embedded PDFs, forms) are left exactly as they were.
     """
-    counter = {"index": 0}
+    pairs = [
+        (item if isinstance(item, tuple) else (None, item)) for item in video_blocks
+    ]
+
+    by_embed = {}
+    unkeyed = []
+    for embed, block in pairs:
+        if embed:
+            by_embed.setdefault(embed, []).append(block)
+        else:
+            unkeyed.append(block)
+
+    def take(embed):
+        queue = by_embed.get(embed)
+        if queue:
+            return queue.pop(0)
+        # Deliberately NO fallback to another embed's block. Handing this iframe
+        # a video keyed to a different embed is precisely the mix-up this
+        # function exists to prevent -- it would show the wrong lecture's video
+        # under a player, silently. Only blocks with no embed URL at all (older
+        # manifests, which did not record one) are placed positionally.
+        if unkeyed:
+            return unkeyed.pop(0)
+        return None
 
     def replace(match):
         tag = match.group(0)
         if not is_player_iframe(tag):
             return tag
-        index = counter["index"]
-        counter["index"] += 1
-        if index < len(video_blocks):
-            return video_blocks[index]
-        return build_missing_block()
+        block = take(iframe_src(tag))
+        return block if block is not None else build_missing_block()
 
-    return _IFRAME_RE.sub(replace, page_html)
+    masked, stored = _mask_opaque(page_html)
+    return _unmask_opaque(_IFRAME_RE.sub(replace, masked), stored)
 
 
 def build_nav_bar(entry, previous_entry, next_entry, course_root):
@@ -185,6 +304,24 @@ def build_nav_bar(entry, previous_entry, next_entry, course_root):
     return '<nav class="teachable-dl-nav">' + "".join(parts) + "</nav>"
 
 
+#: Strips a nav bar and style block we injected on a previous run.
+_OLD_NAV_RE = re.compile(r'<nav class="teachable-dl-nav">.*?</nav>', re.IGNORECASE | re.DOTALL)
+_OLD_STYLE_RE = re.compile(
+    r'<style id="teachable-dl-offline-style">.*?</style>', re.IGNORECASE | re.DOTALL
+)
+
+
+def strip_previous_rewrite(page_html):
+    """Remove markup a previous rewrite added, so re-running is idempotent.
+
+    ``--rewrite-only`` and a resumed download both re-run the rewriter over
+    pages it has already touched. Without this, every run injected another nav
+    strip and another copy of the stylesheet.
+    """
+    page_html = _OLD_NAV_RE.sub("", page_html)
+    return _OLD_STYLE_RE.sub("", page_html)
+
+
 def _inject(page_html, snippet, tag):
     """Insert ``snippet`` right after the opening ``tag``, or prepend if absent."""
     match = re.search(rf"<{tag}\b[^>]*>", page_html, re.IGNORECASE)
@@ -199,20 +336,28 @@ def render_lecture_page(page_html, entry, previous_entry, next_entry,
     """Apply every offline transform to one saved lecture page."""
     from_dir = os.path.dirname(entry["html"])
 
+    # Re-running over an already-rewritten page must not stack another nav bar.
+    page_html = strip_previous_rewrite(page_html)
+
     blocks = []
     for video in entry.get("videos", []):
         video_url = relative_url(from_dir, video["path"], course_root)
-        tracks = [
-            (
-                subtitle["lang"],
-                relative_url(from_dir, subtitle["path"], course_root),
-                position == 0,
+        tracks = []
+        for position, subtitle in enumerate(video.get("subtitles", [])):
+            path = subtitle.get("path", "")
+            # Only WebVTT renders in a <track>; other formats stay as links.
+            if not path.lower().endswith(".vtt"):
+                continue
+            link = relative_url(from_dir, path, course_root)
+            tracks.append(
+                (
+                    subtitle.get("lang", "und"),
+                    subtitle_track_src(course_root, path, link),
+                    link,
+                    position == 0,
+                )
             )
-            for position, subtitle in enumerate(video.get("subtitles", []))
-            # Only WebVTT renders in a <track>; other formats stay as plain links.
-            if subtitle["path"].lower().endswith(".vtt")
-        ]
-        blocks.append(build_video_block(video_url, tracks))
+        blocks.append((video.get("embed_url"), build_video_block(video_url, tracks)))
 
     page_html = replace_player_iframes(page_html, blocks)
     page_html = rewrite_lecture_links(page_html, from_dir, id_to_path, course_root)
@@ -231,8 +376,12 @@ def render_index(course_title, entries):
         if not entry.get("html"):
             # The page was never saved, so there is nothing to link to.
             continue
-        chapter = entry.get("chapter", "")
+        chapter = str(entry.get("chapter") or "")
         if chapter != current_chapter:
+            if current_chapter is not None:
+                # Every chapter opened a <ul>; only the last one was ever
+                # closed, so each chapter's list nested inside the previous.
+                rows.append("</ul>")
             current_chapter = chapter
             rows.append(f"<h2>{html.escape(chapter)}</h2><ul>")
         url = _to_url(entry["html"])
@@ -244,7 +393,7 @@ def render_index(course_title, entries):
         suffix = f' <small>({", ".join(extras)})</small>' if extras else ""
         rows.append(
             f'<li><a href="{html.escape(url, quote=True)}">'
-            f'{html.escape(entry.get("title", url))}</a>{suffix}</li>'
+            f'{html.escape(str(entry.get("title") or url))}</a>{suffix}</li>'
         )
 
     body = "".join(rows)
@@ -309,7 +458,8 @@ def apply_offline_rewrite(course_root, manifest):
             with open(absolute, "w", encoding="utf-8") as handle:
                 handle.write(page_html)
             rewritten += 1
-        except OSError as exc:
+        except Exception as exc:
+            # One bad entry must not cost every other page its rewrite.
             logger.warning("Could not rewrite %s: %s", relative, exc)
 
     course_html = os.path.join(course_root, "course.html")
@@ -320,14 +470,14 @@ def apply_offline_rewrite(course_root, manifest):
             page_html = rewrite_lecture_links(page_html, "", id_to_path, course_root)
             with open(course_html, "w", encoding="utf-8") as handle:
                 handle.write(page_html)
-        except OSError as exc:
+        except Exception as exc:
             logger.warning("Could not rewrite course.html: %s", exc)
 
     index_path = os.path.join(course_root, "index.html")
     try:
         with open(index_path, "w", encoding="utf-8") as handle:
             handle.write(render_index(manifest.get("title", "Course"), entries))
-    except OSError as exc:
+    except Exception as exc:
         logger.warning("Could not write the course index: %s", exc)
 
     logger.info("Rewrote %s page(s) for offline use; index at %s", rewritten, index_path)

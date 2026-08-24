@@ -1,5 +1,8 @@
 """Attachment handling -- upstream #38 (download PDFs and MP3s)."""
 
+from selenium.webdriver.remote.webdriver import By
+
+from tests.conftest import FakeElement, make_browser
 from teachable_dl.attachments import ATTACHMENT_SELECTORS, _is_downloadable, filename_from_response
 
 
@@ -49,11 +52,51 @@ def test_filename_is_sanitised_and_length_capped():
     assert name.endswith(".pdf")
 
 
-def test_pdf_and_audio_attachment_blocks_are_covered():
-    """#38 asked specifically for PDF and MP3; both live in their own block types."""
-    selectors = " ".join(selector for _, selector in ATTACHMENT_SELECTORS)
-    assert "pdf_embed" in selectors
-    assert "type-audio" in selectors
+def _collect(mapping, **settings_kwargs):
+    from teachable_dl.attachments import AttachmentDownloader
+
+    browser = make_browser(mapping, **settings_kwargs)
+    return AttachmentDownloader(browser, browser.settings).collect_urls()
+
+
+def test_pdf_and_mp3_attachments_are_actually_collected():
+    """#38 asked specifically for PDFs and MP3s; drive the real collection."""
+    pdf = FakeElement(attributes={"href": "https://cdn.example.com/workbook.pdf"})
+    mp3 = FakeElement(attributes={"href": "https://cdn.example.com/audio.mp3"})
+    urls = _collect(
+        {
+            (By.CSS_SELECTOR, ".lecture-attachment-type-pdf_embed a[href]"): [pdf],
+            (By.CSS_SELECTOR, ".lecture-attachment-type-audio a[href]"): [mp3],
+        }
+    )
+    assert set(urls) == {
+        "https://cdn.example.com/workbook.pdf",
+        "https://cdn.example.com/audio.mp3",
+    }
+
+
+def test_the_same_attachment_matched_twice_is_only_downloaded_once():
+    shared = FakeElement(attributes={"href": "https://cdn.example.com/a.pdf"})
+    urls = _collect(
+        {
+            (By.CSS_SELECTOR, ".lecture-attachment-type-file a[href]"): [shared],
+            (By.CSS_SELECTOR, ".lecture-attachment-type-pdf_embed a[href]"): [shared],
+        }
+    )
+    assert urls == ["https://cdn.example.com/a.pdf"]
+
+
+def test_an_internal_address_is_never_collected():
+    """A malicious school linking to cloud metadata must not be followed."""
+    evil = FakeElement(attributes={"href": "http://169.254.169.254/latest/meta-data/"})
+    assert _collect({(By.CSS_SELECTOR, ".lecture-attachment-type-file a[href]"): [evil]}) == []
+
+
+def test_private_addresses_can_be_opted_into_for_self_hosted_schools():
+    local = FakeElement(attributes={"href": "http://127.0.0.1:8000/a.pdf"})
+    mapping = {(By.CSS_SELECTOR, ".lecture-attachment-type-file a[href]"): [local]}
+    assert _collect(mapping) == []
+    assert _collect(mapping, allow_private_hosts=True) == ["http://127.0.0.1:8000/a.pdf"]
 
 
 def test_video_players_are_not_treated_as_downloadable_files():

@@ -330,9 +330,32 @@ class Browser:
     # ---------------------------------------------------------------- extras
 
     def cookies_for_requests(self):
-        """Selenium cookie jar as a plain dict, for authenticated ``requests`` calls."""
+        """Selenium's cookie jar, keeping each cookie's domain and path.
+
+        Returning ``{name: value}`` and feeding that to ``session.cookies.set()``
+        produces *domain-less* cookies, which requests sends to every host it
+        talks to. One redirect to an attacker-controlled server would then hand
+        over the user's Teachable session. Preserving the domain lets requests
+        scope each cookie the way the browser does.
+        """
         try:
-            return {c["name"]: c["value"] for c in self.driver.get_cookies()}
+            raw = self.driver.get_cookies()
         except Exception as exc:
             logger.debug("Could not read cookies: %s", exc)
-            return {}
+            return []
+
+        cookies = []
+        for cookie in raw:
+            name, value = cookie.get("name"), cookie.get("value")
+            if not name:
+                continue
+            cookies.append(
+                {
+                    "name": name,
+                    "value": value or "",
+                    "domain": cookie.get("domain") or "",
+                    "path": cookie.get("path") or "/",
+                    "secure": bool(cookie.get("secure")),
+                }
+            )
+        return cookies

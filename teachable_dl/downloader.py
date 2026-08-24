@@ -12,7 +12,13 @@ from . import __version__, offline
 from .attachments import AttachmentDownloader, filename_from_response
 from .auth import Authenticator, LoginError
 from .browser import Browser, SessionLostError, is_dead_session_error, render_pdf
-from .media import MediaDownloader
+from .media import MediaDownloader, find_existing_video
+from .netutil import (
+    DownloadTooLargeError,
+    UnsafeUrlError,
+    safe_get,
+    stream_to_file,
+)
 from .templates import CurriculumParser
 
 logger = logging.getLogger(__name__)
@@ -35,6 +41,9 @@ class CourseDownloader:
         self.media = MediaDownloader(settings)
         self.attachments = AttachmentDownloader(self.browser, settings)
         self._authenticated_for = None
+        #: Set when a post-restart re-login fails; every later navigation would
+        #: land on the sign-in page, so we stop instead of saving garbage.
+        self.auth_broken = False
         # After an automatic browser restart we have a fresh, logged-out Chrome.
         self.browser.on_restart = self._reauthenticate
 
@@ -42,8 +51,6 @@ class CourseDownloader:
 
     def close(self):
         self.browser.quit()
-        if os.path.exists("cookies.txt"):
-            os.remove("cookies.txt")
 
     def _reauthenticate(self):
         if self._authenticated_for is None:
@@ -51,8 +58,12 @@ class CourseDownloader:
         logger.info("Logging back in after the browser restart")
         try:
             self.auth.authenticate(self._authenticated_for)
+            self.auth_broken = False
         except Exception as exc:
-            logger.error("Could not log back in: %s", exc)
+            # Carrying on here means every later page is the sign-in form, saved
+            # as if it were a lecture, and the run still reports success.
+            self.auth_broken = True
+            logger.error("Could not log back in after the browser restart: %s", exc)
 
     # ------------------------------------------------------------------- run
 
@@ -115,24 +126,37 @@ class CourseDownloader:
             "lectures": [],
         }
 
-        for lecture in course.lectures:
-            try:
-                manifest["lectures"].append(self.download_lecture(lecture, course_root))
-            except SessionLostError:
-                raise
-            except Exception as exc:
-                logger.error(
-                    "Could not download lecture %s: %s",
-                    lecture.title,
-                    exc,
-                    exc_info=self.settings.verbose,
-                )
-
-        offline.write_manifest(course_root, manifest)
-
-        if self.settings.offline_rewrite:
-            logger.info("Rewriting saved pages for offline viewing")
-            offline.apply_offline_rewrite(course_root, manifest)
+        try:
+            for lecture in course.lectures:
+                if self.auth_broken:
+                    raise SessionLostError(
+                        "no longer logged in; stopping so sign-in pages are not "
+                        "saved as lectures"
+                    )
+                try:
+                    manifest["lectures"].append(self.download_lecture(lecture, course_root))
+                except SessionLostError as exc:
+                    # Recovery lives in Browser.get, so a session lost during a
+                    # find_elements call never got a chance to heal. Give it one.
+                    logger.warning("Session lost on %s: %s", lecture.title, exc)
+                    self.browser.ensure_alive()
+                    if self.auth_broken:
+                        raise
+                    logger.info("Browser recovered, continuing with the next lecture")
+                except Exception as exc:
+                    logger.error(
+                        "Could not download lecture %s: %s",
+                        lecture.title,
+                        exc,
+                        exc_info=self.settings.verbose,
+                    )
+        finally:
+            # Even a half-finished course must leave a manifest behind, or the
+            # lectures already on disk lose their offline navigation entirely.
+            offline.write_manifest(course_root, manifest)
+            if self.settings.offline_rewrite and manifest["lectures"]:
+                logger.info("Rewriting saved pages for offline viewing")
+                offline.apply_offline_rewrite(course_root, manifest)
 
         logger.info("Finished course: %s", course.title)
         return manifest
@@ -142,23 +166,38 @@ class CourseDownloader:
             return
         session = self.attachments.new_session()
         try:
-            response = session.get(course.image_url, timeout=30)
+            response = safe_get(
+                session,
+                course.image_url,
+                allow_private=self.settings.allow_private_hosts,
+                stream=True,
+                timeout=30,
+            )
             response.raise_for_status()
+        except UnsafeUrlError as exc:
+            logger.warning("Refusing the course image URL: %s", exc)
+            return
         except Exception as exc:
             logger.warning("Could not download the course image: %s", exc)
             return
-        name = filename_from_response(
-            course.image_url, response, "course-image",
-            ascii_only=self.settings.ascii_filenames,
-        )
-        if not os.path.splitext(name)[1]:
-            name += ".jpg"
+
         try:
-            with open(os.path.join(course_root, name), "wb") as handle:
-                handle.write(response.content)
+            name = filename_from_response(
+                course.image_url, response, "course-image",
+                ascii_only=self.settings.ascii_filenames,
+            )
+            if not os.path.splitext(name)[1]:
+                name += ".jpg"
+            stream_to_file(
+                response,
+                os.path.join(course_root, name),
+                max_bytes=min(self.settings.max_file_bytes, 64 * 1024 * 1024),
+            )
             logger.info("Downloaded the course image")
-        except OSError as exc:
+        except (OSError, DownloadTooLargeError) as exc:
             logger.warning("Could not save the course image: %s", exc)
+        finally:
+            response.close()
 
     # --------------------------------------------------------------- lecture
 
@@ -236,6 +275,14 @@ class CourseDownloader:
             if not url:
                 continue
 
+            # Look for the post-rename name *before* fetching: the file is
+            # stored as "<basename><ext>", not under whatever name the server
+            # suggested, so checking the server name re-downloaded it forever.
+            existing = find_existing_video(output_path, lecture.basename)
+            if self.settings.resume and existing:
+                logger.info("Skipping existing video file: %s", os.path.basename(existing))
+                return existing
+
             session = self.attachments.new_session()
             path = self.attachments.download_url(
                 session, url, output_path, lecture.basename
@@ -249,8 +296,8 @@ class CourseDownloader:
                     try:
                         os.replace(path, wanted)
                         path = wanted
-                    except OSError:
-                        pass
+                    except OSError as exc:
+                        logger.debug("Could not rename %s: %s", path, exc)
                 logger.info("Downloaded video file: %s", os.path.basename(path))
                 return path
         return None
@@ -335,13 +382,16 @@ class CourseDownloader:
                 basename,
                 output_path,
                 embed_url=source["embed_url"],
-                refresh_link=lambda i=index: self._refresh_stream_url(lecture, i),
+                refresh_link=lambda i=index, e=source["embed_url"]: (
+                    self._refresh_stream_url(lecture, e, i)
+                ),
             )
             if not video_path:
                 continue
 
             results.append(
                 {
+                    "embed_url": source["embed_url"],
                     "path": os.path.relpath(video_path, course_root),
                     "subtitles": [
                         {
@@ -355,12 +405,32 @@ class CourseDownloader:
 
         return results
 
-    def _refresh_stream_url(self, lecture, index):
-        """Re-extract a signed stream URL after the original expired (#44, #55)."""
+    def _refresh_stream_url(self, lecture, embed_url, index):
+        """Re-extract a signed stream URL after the original expired (#44, #55).
+
+        Matching on the embed URL rather than the position matters: an iframe
+        that fails to load on the reload shifts every later index, and with
+        ``continuedl`` on, yt-dlp would append a different video's fragments to
+        the ``.part`` file already on disk and produce a corrupt result that
+        still looks complete.
+        """
         logger.info("Re-opening %s to get a fresh stream URL", lecture.title)
         self.browser.get(lecture.url)
         self.browser.handle_cloudflare_if_present()
         sources = self._video_sources()
+
+        for source in sources:
+            if embed_url and source["embed_url"] == embed_url:
+                return source["stream_url"]
+
+        if embed_url:
+            logger.warning(
+                "Embed %s is gone from the reloaded page; not guessing a "
+                "replacement stream", embed_url,
+            )
+            return None
+
+        # Only fall back to position when there was no embed URL to key on.
         if index <= len(sources):
             return sources[index - 1]["stream_url"]
         return None

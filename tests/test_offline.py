@@ -117,7 +117,10 @@ def test_self_closing_iframes_are_handled():
 
 
 def test_video_block_adds_a_track_for_each_subtitle():
-    block = build_video_block("v.mp4", [("en", "v.en.vtt", True), ("es", "v.es.vtt", False)])
+    block = build_video_block(
+        "v.mp4",
+        [("en", "v.en.vtt", "v.en.vtt", True), ("es", "v.es.vtt", "v.es.vtt", False)],
+    )
     assert 'srclang="en"' in block and "default" in block
     assert 'srclang="es"' in block
 

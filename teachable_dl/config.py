@@ -32,6 +32,10 @@ class Settings:
     timeout: int = 10
     max_session_restarts: int = 3
 
+    # Safety limits on remote-controlled downloads
+    allow_private_hosts: bool = False
+    max_file_bytes: int = 8 * 1024 * 1024 * 1024  # 8 GiB
+
     # Downloading
     concurrent_fragments: int = 16
     retries: int = 10

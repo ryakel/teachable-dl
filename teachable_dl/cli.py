@@ -85,6 +85,15 @@ def build_parser():
                                "resume a long download (default: 3)")
     download.add_argument("--no-resume", action="store_true",
                           help="Re-download files that already exist")
+    download.add_argument("--max-file-size", type=float, default=8.0, metavar="GIB",
+                          help="Refuse any single attachment larger than this many "
+                               "GiB (default: 8)")
+    download.add_argument("--allow-private-hosts", action="store_true",
+                          help="Allow downloads from private, loopback and link-local "
+                               "addresses. Off by default: course pages are remote "
+                               "input, and following them to an internal address is a "
+                               "server-side request forgery risk. Only enable this for "
+                               "a school you host yourself.")
 
     misc = parser.add_argument_group("misc")
     misc.add_argument("--complete-lecture", action="store_true",
@@ -155,6 +164,8 @@ def settings_from_args(args, email, password, totp_secret):
         fragment_retries=args.fragment_retries,
         link_refresh_attempts=args.link_refresh_attempts,
         resume=not args.no_resume,
+        allow_private_hosts=args.allow_private_hosts,
+        max_file_bytes=int(args.max_file_size * 1024 * 1024 * 1024),
         complete_lecture=args.complete_lecture,
         save_pdf=args.save_pdf,
         save_screenshot=args.save_screenshot,

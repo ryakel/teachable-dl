@@ -35,15 +35,29 @@ def test_parallel_fragment_option_is_spelled_correctly(settings, with_ffmpeg):
     assert "concurrentfragments" not in opts
 
 
-def test_the_option_name_is_one_yt_dlp_actually_accepts(settings, with_ffmpeg):
-    """Guard against the typo coming back: check against yt-dlp's real signature."""
-    import inspect
+def test_yt_dlp_really_receives_the_parallelism_setting(settings, with_ffmpeg):
+    """Hand the options to a real YoutubeDL and read back what it resolved.
 
+    Asserting against yt-dlp's own source proved nothing about our code -- it
+    passed whether or not build_ydl_opts spelled the option correctly. Building
+    the object means a typo shows up as the default value here.
+    """
     import yt_dlp
 
-    assert "concurrent_fragment_downloads" in inspect.getsource(yt_dlp.YoutubeDL)
-    # And that the misspelling really is not a thing yt-dlp knows about.
-    assert "concurrentfragments" not in inspect.getsource(yt_dlp.YoutubeDL)
+    settings.concurrent_fragments = 9
+    with yt_dlp.YoutubeDL(build_ydl_opts(settings, "out.%(ext)s", {})) as ydl:
+        assert ydl.params.get("concurrent_fragment_downloads") == 9
+
+
+def test_a_misspelled_option_would_be_caught_by_that_check(settings, with_ffmpeg):
+    """Sanity-check the guard itself: the old typo resolves to the default."""
+    import yt_dlp
+
+    opts = build_ydl_opts(settings, "out.%(ext)s", {})
+    del opts["concurrent_fragment_downloads"]
+    opts["concurrentfragments"] = 9
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        assert ydl.params.get("concurrent_fragment_downloads") != 9
 
 
 def test_concurrency_is_clamped_to_at_least_one(with_ffmpeg):

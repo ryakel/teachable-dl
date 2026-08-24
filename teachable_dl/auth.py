@@ -282,6 +282,32 @@ class Authenticator:
 
     # ------------------------------------------------------------------- OTP
 
+    def _wait_for_otp_to_clear(self, timeout=None):
+        """Wait until the OTP form goes away, meaning the code was accepted.
+
+        The previous check slept two seconds and then asked whether the OTP
+        input was still on screen. It always is until the form POST completes,
+        so any verification round-trip slower than that reported a perfectly
+        good code as rejected and killed the run.
+        """
+        deadline = time.time() + (timeout or max(self.settings.timeout * 3, 30))
+        starting_url = self.browser.current_url
+
+        while time.time() < deadline:
+            time.sleep(1)
+            try:
+                self.browser.ensure_alive()
+            except SessionLostError:
+                raise
+            if self.browser.current_url != starting_url:
+                logger.debug("Navigated away from the OTP form")
+                return True
+            if self.browser.find_first(OTP_SELECTORS, timeout=0) is None:
+                logger.debug("OTP form is gone")
+                return True
+
+        return False
+
     def handle_otp_challenge(self):
         """Fill in a one-time password, automatically when a TOTP secret is set."""
         otp_element = self.browser.find_first(OTP_SELECTORS, timeout=5)
@@ -300,8 +326,8 @@ class Authenticator:
             except LoginError:
                 # Some OTP forms submit themselves once the last digit lands.
                 logger.debug("No submit button on the OTP form; assuming auto-submit")
-            time.sleep(2)
-            if self.browser.find_first(OTP_SELECTORS, timeout=5) is not None:
+
+            if not self._wait_for_otp_to_clear():
                 raise LoginError(
                     "The generated TOTP code was rejected. Check that --totp-secret "
                     "matches the account and that your clock is accurate."
@@ -320,4 +346,8 @@ class Authenticator:
                 self._submit()
             except LoginError:
                 logger.debug("No submit button on the OTP form; assuming auto-submit")
-            time.sleep(2)
+            if not self._wait_for_otp_to_clear():
+                logger.warning(
+                    "The one-time password form is still showing; the code may have "
+                    "been wrong or the page may still be loading."
+                )

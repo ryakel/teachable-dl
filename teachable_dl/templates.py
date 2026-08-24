@@ -52,33 +52,82 @@ const HEADING_SELECTOR = [
   '[class*="chapter-title"]'
 ].join(',');
 
+// Whole-token class selectors. `[class*="locked"]` also matches "unlocked",
+// which silently dropped free-preview lectures from the download.
+const LOCKED_SELECTOR = [
+  '.drip-tag', '.lecture-locked', '.locked', '.is-locked',
+  '[data-locked="true"]'
+].join(',');
+
+function clean(text) {
+  return (text || '').replace(/\s+/g, ' ').trim();
+}
+
+// Titles often sit next to a duration badge. textContent glues them together
+// ("Alpha lesson5:32"), so drop a trailing timestamp.
+function stripDuration(text) {
+  return text.replace(/\s*[\(\[]?\d{1,3}:\d{2}(?::\d{2})?[\)\]]?\s*$/, '').trim();
+}
+
+function lectureTitle(anchor) {
+  const named = anchor.querySelector(
+    '.lecture-name, [class*="lecture-name"], [class*="lecture-title"], .text'
+  );
+  if (named) return stripDuration(clean(named.textContent));
+  // Otherwise take the first child that yields text, so a sibling duration
+  // element is not concatenated onto the name.
+  for (const node of anchor.childNodes) {
+    const text = stripDuration(clean(node.textContent || ''));
+    if (text) return text;
+  }
+  return stripDuration(clean(anchor.textContent));
+}
+
+// The nearest heading *preceding* the anchor, not merely the first heading
+// anywhere inside an ancestor. Taking the first meant a flat curriculum, where
+// every heading and link are siblings, reported chapter 1 for every lecture and
+// collapsed the whole course into one directory.
+function nearestHeading(anchor) {
+  let node = anchor.parentElement;
+  for (let depth = 0; node && depth < 12; depth++, node = node.parentElement) {
+    let best = '';
+    for (const heading of node.querySelectorAll(HEADING_SELECTOR)) {
+      // Skip a heading wrapping the anchor, and one nested inside it (which is
+      // the lecture's own title, not its chapter).
+      if (heading.contains(anchor) || anchor.contains(heading)) continue;
+      const position = anchor.compareDocumentPosition(heading);
+      if (position & Node.DOCUMENT_POSITION_PRECEDING) {
+        const text = clean(heading.textContent);
+        if (text) best = text;   // keep the last preceding one = the nearest
+      }
+    }
+    if (best) return best;
+  }
+  return '';
+}
+
 const anchors = Array.from(document.querySelectorAll('a[href*="/lectures/"]'));
 const seen = new Set();
 const results = [];
 
 for (const anchor of anchors) {
   const href = (anchor.href || '').split('#')[0];
-  if (!/\/lectures\/\d+/.test(href) || seen.has(href)) continue;
-  seen.add(href);
+  const found = href.match(/\/lectures\/(\d+)/);
+  if (!found) continue;
 
-  const nameNode = anchor.querySelector(
-    '.lecture-name, [class*="lecture-name"], [class*="lecture-title"], .text'
-  );
-  let title = ((nameNode ? nameNode.textContent : anchor.textContent) || '').trim();
-  title = title.split('\n').map(s => s.trim()).filter(Boolean)[0] || '';
+  // Dedupe on the lecture id, not the raw href: Teachable links the same
+  // lecture with and without a query string ("?from=sidebar"), which used to
+  // scrape and download it twice.
+  const id = found[1];
+  if (seen.has(id)) continue;
+  seen.add(id);
 
-  let section = '';
-  let node = anchor.parentElement;
-  for (let depth = 0; node && depth < 12 && !section; depth++, node = node.parentElement) {
-    for (const heading of node.querySelectorAll(HEADING_SELECTOR)) {
-      if (heading.contains(anchor)) continue;
-      const text = (heading.textContent || '').trim();
-      if (text) { section = text.split('\n')[0].trim(); break; }
-    }
-  }
-
-  const locked = !!anchor.closest('.drip-tag, .lecture-locked, [class*="locked"]');
-  results.push({href: href, title: title, section: section, locked: locked});
+  results.push({
+    href: href,
+    title: lectureTitle(anchor),
+    section: nearestHeading(anchor),
+    locked: !!anchor.closest(LOCKED_SELECTOR)
+  });
 }
 return results;
 """
@@ -340,11 +389,21 @@ def build_course_from_entries(course, entries, ascii_only=False):
     """
     chapter_names = {}
     chapter_counters = {}
+    seen_ids = set()
 
     for entry in entries:
         url = entry.get("href")
         if not url:
             continue
+
+        # Guard against the same lecture appearing twice (sidebar link plus
+        # "continue" button), which would download the video twice.
+        identifier = lecture_id_from_url(url)
+        if identifier:
+            if identifier in seen_ids:
+                logger.debug("Skipping duplicate lecture %s", identifier)
+                continue
+            seen_ids.add(identifier)
         if entry.get("locked"):
             logger.warning("Skipping locked lecture: %s", entry.get("title") or url)
             continue

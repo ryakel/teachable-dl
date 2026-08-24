@@ -284,6 +284,39 @@ python3 main.py --rewrite-only "courses/<Course Title>"
 
 Re-running the same command resumes: files already on disk are skipped.
 
+<!-- SECURITY -->
+
+## Security notes
+
+A course page is remote input. Everything on it — attachment links, the course
+image, subtitle playlists, and every title — is chosen by whoever runs the
+school, so this fork treats those as untrusted:
+
+- **Cookies are scoped to their domain.** The browser's session is reused for
+  attachment downloads, but each cookie keeps the domain the browser gave it, so
+  a redirect to a third-party host cannot carry your Teachable session with it.
+- **Redirects are followed one hop at a time**, and every hop is re-checked
+  before the request goes out.
+- **Private, loopback and link-local addresses are refused.** A link to
+  `http://169.254.169.254/…` or `http://127.0.0.1:6379/` is not fetched. If you
+  self-host a school on your own network, `--allow-private-hosts` opts back in.
+- **Downloads are capped and written atomically.** `--max-file-size` (8 GiB by
+  default) bounds any single attachment, and files land in `.part` first so an
+  interrupted transfer never leaves a truncated file that a later run mistakes
+  for a finished one.
+- **Titles are sanitized before they touch the filesystem**, so a lecture named
+  `../../.ssh/authorized_keys` cannot escape the output directory.
+
+One thing to be aware of: the saved lecture HTML is the page **as served to a
+logged-in browser**. Teachable embeds account context in that markup, so the
+course folder may contain tokens tied to your session. Treat a downloaded course
+as private, and think twice before sharing the folder or syncing it somewhere
+public.
+
+Prefer `TEACHABLE_PASSWORD` or the interactive prompt over `--password`: a
+password on the command line is visible in your shell history and to anyone who
+can run `ps`.
+
 <!-- CHANGES -->
 
 ## What this fork changes

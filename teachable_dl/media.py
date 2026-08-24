@@ -25,6 +25,7 @@ Four upstream issues are addressed here.
     already on disk.
 """
 
+import glob
 import logging
 import os
 import shutil
@@ -32,6 +33,8 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 import yt_dlp
+
+from .netutil import TEXT_MAX_BYTES, UnsafeUrlError, read_capped, safe_get
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +123,18 @@ def build_ydl_opts(settings, output_template, headers, want_subtitles=False):
     return opts
 
 
+def escape_output_template(basename):
+    """Make a lecture title safe to embed in a yt-dlp output template.
+
+    yt-dlp treats ``%`` as the start of a field. A lecture called
+    "String %(title)s formatting" would otherwise have the field substituted --
+    writing the file under a name we never look for -- and an incomplete key
+    like "%(x" raises ``ValueError: incomplete format key`` and fails the
+    download outright.
+    """
+    return basename.replace("%", "%%")
+
+
 def _looks_complete(path):
     """A finished download exists, is non-empty, and left no partial siblings."""
     if not os.path.isfile(path):
@@ -131,10 +146,36 @@ def _looks_complete(path):
     return True
 
 
+#: Sidecars that share a lecture's stem but are not the video itself.
+_NON_VIDEO_SUFFIXES = (
+    ".vtt", ".srt", ".ass", ".ssa", ".json", ".html", ".pdf", ".png", ".jpg",
+    ".jpeg", ".webp", ".txt", ".part", ".ytdl", ".temp",
+)
+#: Preferred order when more than one candidate exists.
+_VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".ts", ".flv", ".avi", ".m4v")
+
+
 def find_existing_video(output_path, basename):
-    """Return an already-downloaded video for this lecture, if there is one."""
-    for extension in (".mp4", ".mkv", ".webm", ".m4a", ".mov"):
+    """Return an already-downloaded video for this lecture, if there is one.
+
+    A fixed extension list missed formats yt-dlp legitimately produces (``.ts``
+    and ``.flv`` turn up in the no-ffmpeg fallback path), so a finished download
+    looked absent and was fetched again. Globbing the stem finds whatever
+    actually landed, while the sidecar list keeps a subtitle or a saved page
+    from being mistaken for the video.
+    """
+    for extension in _VIDEO_EXTENSIONS:
         candidate = os.path.join(output_path, basename + extension)
+        if _looks_complete(candidate):
+            return candidate
+
+    for candidate in sorted(glob.glob(glob.escape(os.path.join(output_path, basename)) + ".*")):
+        if candidate.lower().endswith(_NON_VIDEO_SUFFIXES):
+            continue
+        # "01-Intro.en.vtt" shares the stem but is a sidecar, not a video.
+        remainder = candidate[len(os.path.join(output_path, basename)):]
+        if remainder.count(".") > 1:
+            continue
         if _looks_complete(candidate):
             return candidate
     return None
@@ -161,7 +202,9 @@ class MediaDownloader:
                 return existing
 
         os.makedirs(output_path, exist_ok=True)
-        template = os.path.join(output_path, basename + ".%(ext)s")
+        template = os.path.join(
+            output_path, escape_output_template(basename) + ".%(ext)s"
+        )
         attempts = max(1, self.settings.link_refresh_attempts)
         current_link = link
         last_error = None
@@ -265,35 +308,82 @@ class MediaDownloader:
 
         return written
 
-    def _fetch_subtitle(self, url, headers):
-        """Resolve a subtitle URL, following an m3u8 playlist if that is what it is."""
+    def _fetch_subtitle(self, url, headers, _depth=0):
+        """Resolve a subtitle URL, following and joining an m3u8 playlist.
+
+        Two bugs lived here. The old code took the *first* non-comment line of
+        the playlist and saved that single segment as the whole track, so a
+        three-hour lecture got subtitles covering only its opening minutes. And
+        the segment URL came straight from a school-controlled playlist into
+        ``requests.get`` with no validation, which is an SSRF primitive.
+        """
+        if _depth > 2:
+            logger.warning("Subtitle playlist nests too deeply, giving up")
+            return None
+
+        session = requests.Session()
         try:
-            response = requests.get(url, headers=headers, timeout=30)
+            response = safe_get(
+                session,
+                url,
+                allow_private=self.settings.allow_private_hosts,
+                stream=True,
+                timeout=30,
+                headers=headers,
+            )
             response.raise_for_status()
+            body = read_capped(response, TEXT_MAX_BYTES)
+        except UnsafeUrlError as exc:
+            logger.warning("Refusing subtitle URL: %s", exc)
+            return None
         except Exception as exc:
-            logger.warning("Could not fetch subtitle playlist: %s", exc)
+            logger.warning("Could not fetch subtitle: %s", exc)
+            return None
+        finally:
+            session.close()
+
+        text = body.decode("utf-8", "replace")
+        if not text.lstrip().startswith("#EXTM3U"):
+            return body
+
+        segments = [
+            urljoin(url, line.strip())
+            for line in text.splitlines()
+            if line.strip() and not line.startswith("#")
+        ]
+        if not segments:
+            logger.warning("Subtitle playlist contained no segments")
             return None
 
-        body = response.text
-        if not body.lstrip().startswith("#EXTM3U"):
-            return response.content
+        # A master playlist points at another playlist; a media playlist points
+        # at the cue files themselves. Recurse once for the former.
+        if len(segments) == 1:
+            nested = self._fetch_subtitle(segments[0], headers, _depth + 1)
+            return nested
 
-        # It is a playlist: the first non-comment line is the actual track.
-        target = None
-        for line in body.splitlines():
-            line = line.strip()
-            if line and not line.startswith("#"):
-                target = line
-                break
+        parts = []
+        for segment in segments:
+            chunk = self._fetch_subtitle(segment, headers, _depth + 1)
+            if chunk:
+                parts.append(chunk)
 
-        if target is None:
-            logger.warning("Subtitle playlist contained no media segment")
+        if not parts:
             return None
+        return _merge_webvtt(parts)
 
-        try:
-            resolved = requests.get(urljoin(url, target), headers=headers, timeout=30)
-            resolved.raise_for_status()
-        except Exception as exc:
-            logger.warning("Could not fetch subtitle track: %s", exc)
-            return None
-        return resolved.content
+
+def _merge_webvtt(parts):
+    """Join WebVTT segments into one track, keeping a single WEBVTT header."""
+    merged = [b"WEBVTT\n"]
+    for part in parts:
+        text = part.decode("utf-8", "replace").lstrip("\ufeff")
+        lines = text.splitlines()
+        # Drop the per-segment header and the blank line after it.
+        if lines and lines[0].strip().startswith("WEBVTT"):
+            lines = lines[1:]
+            while lines and not lines[0].strip():
+                lines = lines[1:]
+        body = "\n".join(lines).strip()
+        if body:
+            merged.append(b"\n" + body.encode("utf-8") + b"\n")
+    return b"".join(merged)

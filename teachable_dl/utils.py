@@ -106,6 +106,45 @@ def lecture_basename(index, title):
     return "{:02d}-{}".format(index, title)
 
 
+def normalize_name(name):
+    """Fold a filename to NFC so it can be compared across filesystems.
+
+    macOS matters here. HFS+ stores filenames decomposed (NFD), so a name we
+    wrote as "Cafe\u0301.mp4" comes back from ``os.listdir`` as
+    "Cafe\u0301.mp4" in decomposed form and no longer equals the NFC string we
+    are holding. ``os.path.isfile`` still works, because the filesystem
+    normalises lookups, but any comparison we do in Python does not -- which
+    silently broke "have I already downloaded this?" for accented titles.
+    """
+    return unicodedata.normalize("NFC", name)
+
+
+def iter_directory(directory):
+    """Yield ``(normalized_name, real_name)`` for each entry in ``directory``.
+
+    Compare against the normalized name; do file I/O with the real one.
+    """
+    try:
+        entries = sorted(os.listdir(directory))
+    except OSError:
+        return
+    for entry in entries:
+        yield normalize_name(entry), entry
+
+
+def split_stem_suffix(filename, stem):
+    """Return what follows ``stem`` in ``filename``, or ``None`` if absent.
+
+    Both sides are normalized first, so this works whether the filesystem
+    handed us a composed or decomposed name.
+    """
+    normalized_name = normalize_name(filename)
+    normalized_stem = normalize_name(stem)
+    if not normalized_name.startswith(normalized_stem):
+        return None
+    return normalized_name[len(normalized_stem):]
+
+
 def create_folder(course_title, output_dir=None):
     root = output_dir or os.path.join(os.path.abspath(os.getcwd()), "courses")
     course_path = os.path.join(root, course_title)

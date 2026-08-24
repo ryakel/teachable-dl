@@ -112,6 +112,33 @@ sudo apt install chromium-browser
 sudo apt install chromium
 ```
 
+#### For macOS users
+
+> **The Python that ships with macOS is too old.** `/usr/bin/python3` is 3.9,
+> and this project needs 3.10 or newer, so `python3 -m venv` with the system
+> Python will fail at `pip install`. Install a newer one first:
+>
+> ```sh
+> brew install python@3.12
+> ```
+>
+> Then use it explicitly when creating the virtual environment
+> (`python3.12 -m venv env`). Check what you actually got with
+> `python --version` *after* activating.
+
+- ffmpeg
+
+```sh
+brew install ffmpeg
+```
+
+- Chrome: download from [Google Chrome's official website](https://www.google.com/chrome/),
+  or `brew install --cask google-chrome`.
+
+Both Apple Silicon and Intel Macs are supported. On Apple Silicon, install
+Chrome for Apple Silicon rather than the Intel build, so the browser and its
+driver match.
+
 #### For Windows users
 - yt-dlp: install using pip. See [yt-dlp's official repo.](https://github.com/yt-dlp/yt-dlp/)
 
@@ -145,10 +172,20 @@ cd teachable-dl
 python3 -m venv env
 ```
 
+> On macOS, use the Python you installed rather than the system one, for example
+> `python3.12 -m venv env` — see the macOS prerequisites above.
+> On Windows the activate step is `env\Scripts\activate` instead.
+
 4. Activate the environment
 
 ```sh
 source env/bin/activate
+```
+
+Confirm you are on a supported interpreter before going further:
+
+```sh
+python --version    # must be 3.10 or newer
 ```
 
 5. Install the requirements

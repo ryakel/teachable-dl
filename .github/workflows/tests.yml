@@ -7,11 +7,23 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # macOS and Windows are in the matrix because the filename handling is
+    # genuinely platform-dependent: macOS filesystems normalise Unicode
+    # differently and are case-insensitive by default, and Windows rejects a
+    # different set of characters.
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
+        exclude:
+          # Keep the matrix affordable: only the newest and oldest supported
+          # Python on the non-Linux runners.
+          - {os: macos-latest, python-version: "3.11"}
+          - {os: macos-latest, python-version: "3.12"}
+          - {os: windows-latest, python-version: "3.11"}
+          - {os: windows-latest, python-version: "3.12"}
 
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +46,7 @@ jobs:
         run: python -m pytest -q
 
       - name: Check both entry points start
+        shell: bash
         run: |
           python main.py --version
           python main.py --help > /dev/null
@@ -42,7 +55,21 @@ jobs:
 
       - name: Check the package imports from an unrelated directory
         # Catches a module that only resolves because ./teachable_dl is in cwd.
+        shell: bash
         run: cd "$RUNNER_TEMP" && python -c "import teachable_dl; print(teachable_dl.__version__)"
+
+      - name: Check a venv install works the way the README describes
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          if [ -d "$RUNNER_TEMP/venv/bin" ]; then
+            VENV="$RUNNER_TEMP/venv/bin"
+          else
+            VENV="$RUNNER_TEMP/venv/Scripts"
+          fi
+          "$VENV/python" -m pip install --quiet --upgrade pip
+          "$VENV/python" -m pip install --quiet -r requirements.txt
+          "$VENV/python" main.py --version
 
   integration:
     # Drives a real browser against the local fixture site. No account, no

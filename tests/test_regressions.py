@@ -266,3 +266,79 @@ def test_the_old_domainless_form_really_did_leak():
     theirs = Request("https://evil.example.com/steal")
     session.cookies.add_cookie_header(theirs)
     assert theirs.get_header("Cookie") == "_teachable_session=SECRET"
+
+
+# ------------------------------------------------------------- macOS quirks
+
+def test_a_decomposed_filename_on_disk_is_still_found(tmp_path):
+    """macOS HFS+ stores filenames decomposed (NFD), so a video we wrote as
+    "Café.mp4" reads back as "Café.mp4" and the resume check missed it,
+    re-downloading every accented lecture on every run."""
+    import unicodedata
+
+    from teachable_dl.media import find_existing_video
+
+    nfd = unicodedata.normalize("NFD", "Café")
+    nfc = unicodedata.normalize("NFC", "Café")
+    (tmp_path / f"01-{nfd}.mp4").write_bytes(b"video")
+
+    found = find_existing_video(str(tmp_path), f"01-{nfc}")
+    assert found is not None
+
+
+def test_a_composed_filename_is_found_from_a_decomposed_basename(tmp_path):
+    import unicodedata
+
+    from teachable_dl.media import find_existing_video
+
+    nfd = unicodedata.normalize("NFD", "Café")
+    nfc = unicodedata.normalize("NFC", "Café")
+    (tmp_path / f"01-{nfc}.mp4").write_bytes(b"video")
+
+    assert find_existing_video(str(tmp_path), f"01-{nfd}") is not None
+
+
+def test_a_decomposed_subtitle_is_not_mistaken_for_a_video(tmp_path):
+    import unicodedata
+
+    from teachable_dl.media import find_existing_video
+
+    nfd = unicodedata.normalize("NFD", "Café")
+    nfc = unicodedata.normalize("NFC", "Café")
+    (tmp_path / f"01-{nfd}.en.vtt").write_bytes(b"WEBVTT")
+
+    assert find_existing_video(str(tmp_path), f"01-{nfc}") is None
+
+
+def test_subtitle_language_is_read_from_a_decomposed_filename():
+    import unicodedata
+
+    from teachable_dl.downloader import CourseDownloader
+
+    nfd = unicodedata.normalize("NFD", "Café")
+    nfc = unicodedata.normalize("NFC", "Café")
+    language = CourseDownloader._lang_from_subtitle_path(
+        f"/x/01-{nfd}.en.vtt", f"01-{nfc}"
+    )
+    assert language == "en"
+
+
+def test_clean_string_output_is_always_composed():
+    """Everything downstream compares against NFC, so sanitizing must produce it."""
+    import unicodedata
+
+    decomposed = unicodedata.normalize("NFD", "Café Münster")
+    assert clean_string(decomposed) == unicodedata.normalize("NFC", "Café-Münster")
+
+
+def test_attachments_differing_only_in_case_do_not_collide():
+    """macOS is case-insensitive by default, so "Slides.pdf" and "slides.pdf"
+    landed on the same path and the second silently destroyed the first."""
+    from teachable_dl.attachments import filename_from_response
+
+    class R:
+        headers = {}
+
+    first = "01-" + filename_from_response("https://c/Slides.pdf", R(), "a")
+    second = "02-" + filename_from_response("https://c/slides.pdf", R(), "a")
+    assert first.lower() != second.lower()

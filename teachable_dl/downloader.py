@@ -13,6 +13,7 @@ from .attachments import AttachmentDownloader, filename_from_response
 from .auth import Authenticator, LoginError
 from .browser import Browser, SessionLostError, is_dead_session_error, render_pdf
 from .media import MediaDownloader, find_existing_video
+from .utils import split_stem_suffix
 from .netutil import (
     DownloadTooLargeError,
     UnsafeUrlError,
@@ -489,7 +490,10 @@ class CourseDownloader:
     @staticmethod
     def _lang_from_subtitle_path(path, basename):
         name = os.path.basename(path)
-        stem = name[len(basename):].lstrip(".") if name.startswith(basename) else name
+        # Normalization-agnostic: on macOS HFS+ the name read back from disk is
+        # decomposed and would not match the composed basename we hold.
+        remainder = split_stem_suffix(name, basename)
+        stem = remainder.lstrip(".") if remainder is not None else name
         parts = stem.split(".")
         return parts[0] if parts and parts[0] else "und"
 

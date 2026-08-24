@@ -194,7 +194,14 @@ class AttachmentDownloader:
         saved = []
         for index, url in enumerate(urls, start=1):
             try:
-                path = self.download_url(session, url, target_dir, f"{index:02d}-attachment")
+                # The index prefix keeps attachments in page order and, on a
+                # case-insensitive filesystem such as the macOS default, stops
+                # "Slides.pdf" and "slides.pdf" from silently overwriting one
+                # another. It is derived from position, so it stays stable
+                # across re-runs and resume still works.
+                path = self.download_url(
+                    session, url, target_dir, "attachment", name_prefix=f"{index:02d}-"
+                )
             except Exception as exc:
                 # One unreachable attachment must not cost us the others.
                 logger.warning("Could not download attachment %s: %s", url, exc)
@@ -203,7 +210,8 @@ class AttachmentDownloader:
                 saved.append(path)
         return saved
 
-    def download_url(self, session, url, target_dir, fallback_name, expected_path=None):
+    def download_url(self, session, url, target_dir, fallback_name,
+                     expected_path=None, name_prefix=""):
         """Fetch one URL into ``target_dir``, safely and resumably.
 
         ``expected_path`` lets the caller say "I am going to rename the result to
@@ -234,7 +242,7 @@ class AttachmentDownloader:
                 logger.warning("Skipping attachment %s: server returned an HTML page", url)
                 return None
 
-            filename = filename_from_response(
+            filename = name_prefix + filename_from_response(
                 url, response, fallback_name, ascii_only=self.settings.ascii_filenames
             )
             file_path = os.path.join(target_dir, filename)

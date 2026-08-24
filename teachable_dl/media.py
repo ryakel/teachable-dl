@@ -25,7 +25,6 @@ Four upstream issues are addressed here.
     already on disk.
 """
 
-import glob
 import logging
 import os
 import shutil
@@ -35,6 +34,7 @@ import requests
 import yt_dlp
 
 from .netutil import TEXT_MAX_BYTES, UnsafeUrlError, read_capped, safe_get
+from .utils import iter_directory, split_stem_suffix
 
 logger = logging.getLogger(__name__)
 
@@ -169,13 +169,19 @@ def find_existing_video(output_path, basename):
         if _looks_complete(candidate):
             return candidate
 
-    for candidate in sorted(glob.glob(glob.escape(os.path.join(output_path, basename)) + ".*")):
-        if candidate.lower().endswith(_NON_VIDEO_SUFFIXES):
+    # Scan the directory rather than globbing: a glob pattern is matched against
+    # os.listdir output as plain strings, so on a filesystem that stores names
+    # decomposed (macOS HFS+) an accented title never matches.
+    for normalized, real_name in iter_directory(output_path):
+        remainder = split_stem_suffix(normalized, basename)
+        if not remainder or not remainder.startswith("."):
             continue
         # "01-Intro.en.vtt" shares the stem but is a sidecar, not a video.
-        remainder = candidate[len(os.path.join(output_path, basename)):]
         if remainder.count(".") > 1:
             continue
+        if normalized.lower().endswith(_NON_VIDEO_SUFFIXES):
+            continue
+        candidate = os.path.join(output_path, real_name)
         if _looks_complete(candidate):
             return candidate
     return None

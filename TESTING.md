@@ -65,9 +65,15 @@ that way a failure tells you which part is broken.
 ### Stage 0 — environment
 
 ```sh
+python --version          # must be 3.10 or newer
 python main.py --version
 ffmpeg -version | head -1
 ```
+
+On macOS, `python --version` is the one to watch: the system `/usr/bin/python3`
+is 3.9, so a venv built with it will not install this project. If you see 3.9,
+rebuild the venv with a newer interpreter (`brew install python@3.12`, then
+`python3.12 -m venv env`).
 
 `ffmpeg` matters: without it the downloader falls back to lower-quality
 single-file streams. If it is missing, install it before judging video quality.

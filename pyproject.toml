@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "teachable-dl"
+version = "2.0.0"
+description = "Download courses you are enrolled in from Teachable"
+readme = "README.md"
+# selenium, seleniumbase and yt-dlp all require 3.10 or newer.
+requires-python = ">=3.10"
+license = { file = "LICENSE.txt" }
+dependencies = [
+    "selenium>=4.47.0",
+    "seleniumbase>=4.52.2",
+    "yt-dlp>=2026.8.19",
+    "requests>=2.34.2",
+    "pyotp>=2.10.0",
+]
+
+[project.optional-dependencies]
+# Do NOT pin pytest tighter than this. seleniumbase hard-pins the exact pytest
+# it wants and the pin is version-dependent -- pytest==8.4.2 on Python 3.10,
+# pytest==9.1.1 on 3.11 and newer -- so demanding >=9.1.1 makes the whole
+# install unresolvable on 3.10.
+dev = ["pytest>=8.4.2"]
+# Pin a chromedriver matching your Chrome to run the integration suite locally:
+#   pip install "chromedriver-py==<your chrome major>.*"
+test-browser = ["chromedriver-py"]
+
+[project.scripts]
+teachable-dl = "teachable_dl.cli:main"
+
+[tool.setuptools]
+packages = ["teachable_dl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: drives a real browser against the local fixture site; skipped when no usable ChromeDriver/Chrome pair is available",
+]

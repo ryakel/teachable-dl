@@ -270,6 +270,29 @@ export TEACHABLE_PASSWORD='your-password'
 python3 main.py --url <course_url>
 ```
 
+### Reusing a session you already have
+
+Automated login cannot cover every school. Teachable's own single sign-on puts
+the password form on another host, some schools sign people in with emailed
+one-time codes, and any of it can sit behind a bot check.
+
+Signing in once in a normal browser and handing over the cookies sidesteps all
+of it — no credentials are typed anywhere, and no challenge is triggered:
+
+```sh
+# From a cookies.txt exported by a browser extension
+python3 main.py --url <course_url> --cookies ~/Downloads/cookies.txt
+
+# Or straight out of an installed browser, having logged in there first
+python3 main.py --url <course_url> --cookies-from-browser chrome
+```
+
+> A cookie file **is** a live session for as long as it lasts. Treat it like the
+> password: do not commit it, and delete it when you are done.
+
+Reading cookies directly from a browser needs that browser closed, and on macOS
+prompts for Keychain access. Exporting a `cookies.txt` avoids both.
+
 ### Two-factor authentication
 
 If your account is protected by an authenticator app, pass the base32 secret and

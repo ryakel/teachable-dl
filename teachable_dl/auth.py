@@ -68,6 +68,28 @@ OTP_SELECTORS = [
     (By.CSS_SELECTOR, "input[id*='verification' i]"),
 ]
 
+def _phrase_xpath(phrase):
+    """Case-insensitive match on a link or button's visible text."""
+    upper, lower = "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"
+    return (
+        f"//a[contains(translate(., '{upper}', '{lower}'), '{phrase}')]"
+        f" | //button[contains(translate(., '{upper}', '{lower}'), '{phrase}')]"
+    )
+
+
+#: "Log in with Teachable" is Teachable's own single sign-on, not a third-party
+#: social login: it leads to a password form on sso.teachable.com. A school that
+#: uses it usually still renders its own email/password form on the same page,
+#: and that form is not the one the account lives in -- filling it in submits
+#: successfully and leaves the browser anonymous.
+SSO_LOGIN_SELECTORS = [
+    (By.CSS_SELECTOR, "a[href*='sso.teachable.com']"),
+    (By.CSS_SELECTOR, "a[href*='/secure/'][href*='identity']"),
+    (By.XPATH, _phrase_xpath("log in with teachable")),
+    (By.XPATH, _phrase_xpath("sign in with teachable")),
+    (By.XPATH, _phrase_xpath("continue with teachable")),
+]
+
 LOGIN_LINK_SELECTORS = [
     (By.LINK_TEXT, "Login"),
     (By.LINK_TEXT, "Log In"),
@@ -146,7 +168,9 @@ class Authenticator:
         """Log in ahead of downloading ``course_url``, and confirm it worked."""
         settings = self.settings
 
-        if settings.man_login_url:
+        if settings.cookies_file or settings.cookies_from_browser:
+            self._authenticate_with_cookies(course_url)
+        elif settings.man_login_url:
             self._manual_login(course_url, settings.man_login_url)
         else:
             if settings.login_url:
@@ -155,12 +179,47 @@ class Authenticator:
                 self.find_login(course_url)
 
             self.browser.handle_cloudflare_if_present()
+            self.follow_sso_if_offered()
             self.login(settings.email, settings.password)
 
         # Submitting a form and seeing no error is not proof of a session.
         # Without this check the run continued unauthenticated, scraped only the
         # free preview lectures, and reported success the whole way.
         self.verify_logged_in(course_url)
+
+    def follow_sso_if_offered(self):
+        """Take the "Log in with Teachable" route when the page offers it.
+
+        Schools that use Teachable's single sign-on typically still render their
+        own email/password form beside the SSO button. That local form belongs to
+        a different account system, so filling it in appears to succeed and
+        leaves the browser signed out -- which is exactly how a run ends up
+        downloading only free preview lectures.
+        """
+        if "sso.teachable.com" in (self.browser.current_url or ""):
+            logger.debug("Already on Teachable's single sign-on")
+            return False
+
+        button = self.browser.find_first(SSO_LOGIN_SELECTORS, timeout=3)
+        if button is None:
+            return False
+
+        logger.info("Following the 'Log in with Teachable' route")
+        try:
+            button.click()
+        except WebDriverException as exc:
+            if is_dead_session_error(exc):
+                raise SessionLostError(str(exc)) from exc
+            try:
+                self.browser.driver.execute_script("arguments[0].click();", button)
+            except WebDriverException:
+                logger.warning("Could not click the single sign-on button")
+                return False
+
+        self.browser.wait_for_body()
+        self.browser.handle_cloudflare_if_present()
+        logger.info("Now at %s", self.browser.current_url)
+        return True
 
     def verify_logged_in(self, course_url):
         """Confirm a real session exists, rather than trusting the form submit.
@@ -201,6 +260,16 @@ class Authenticator:
             self.browser.current_url,
         )
         return False
+
+    def _authenticate_with_cookies(self, course_url):
+        """Adopt a session exported from a browser, rather than logging in."""
+        from .cookies import CookieError, apply_to_browser, load_cookie_jar
+
+        try:
+            jar = load_cookie_jar(self.settings)
+            apply_to_browser(self.browser, jar, course_url)
+        except CookieError as exc:
+            raise LoginError(str(exc)) from exc
 
     def _manual_login(self, start_url, man_login_url):
         """Wait for a human to sign in, however their school does it.

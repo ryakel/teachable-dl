@@ -23,6 +23,9 @@ class Settings:
     man_login_url: str | None = None
     #: How long to wait for a person to finish signing in by hand.
     manual_login_timeout: float = 600.0
+    #: Reuse an existing browser session instead of logging in at all.
+    cookies_file: str | None = None
+    cookies_from_browser: str | None = None
 
     # Output
     output_dir: str = field(default_factory=lambda: os.path.join(os.getcwd(), "courses"))

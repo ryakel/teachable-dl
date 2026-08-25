@@ -45,6 +45,17 @@ def build_parser():
                             "the email/password form on the page is not the one you "
                             "use, and nothing here ever sees your credentials. "
                             "Passing the course URL itself works well.")
+    login.add_argument("--cookies", dest="cookies_file", metavar="FILE",
+                       help="Reuse an existing session from a Netscape cookies.txt, "
+                            "as browser extensions export. Nothing is typed into any "
+                            "form, so single sign-on, emailed codes and bot checks "
+                            "are all sidestepped. Treat the file like a password: it "
+                            "is a live session.")
+    login.add_argument("--cookies-from-browser", metavar="BROWSER[:PROFILE]",
+                       help="Read the session straight out of an installed browser, "
+                            "e.g. 'chrome' or 'firefox:default'. Log in normally "
+                            "first. On macOS this may prompt for Keychain access and "
+                            "needs the browser closed.")
     login.add_argument("--manual-login-timeout", type=float, default=600.0,
                        metavar="SECONDS",
                        help="How long to wait for a manual login (default: 600)")
@@ -182,6 +193,8 @@ def settings_from_args(args, email, password, totp_secret):
         login_url=args.login_url,
         man_login_url=args.man_login_url,
         manual_login_timeout=args.manual_login_timeout,
+        cookies_file=args.cookies_file,
+        cookies_from_browser=args.cookies_from_browser,
         output_dir=os.path.abspath(args.output_dir),
         ascii_filenames=args.ascii_filenames,
         stealth=not args.no_stealth,
@@ -244,10 +257,14 @@ def main(argv=None):
         return 1
 
     email, password, totp_secret = resolve_credentials(args)
-    if not args.man_login_url and not (email and password):
+    if not (args.man_login_url or args.cookies_file or args.cookies_from_browser) \
+            and not (email and password):
         logger.error(
-            "Credentials are missing. Pass --email and --password (or set "
-            "TEACHABLE_EMAIL / TEACHABLE_PASSWORD), or use --man_login_url to log in by hand."
+            "No way to authenticate. Choose one:\n"
+            "  --email/--password (or TEACHABLE_EMAIL / TEACHABLE_PASSWORD)\n"
+            "  --cookies FILE or --cookies-from-browser chrome, to reuse a "
+            "session you already have\n"
+            "  --man_login_url URL, to sign in by hand in the browser window"
         )
         return 1
 

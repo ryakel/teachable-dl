@@ -1,9 +1,10 @@
 """Login handling -- upstream #56 (accounts that require an OTP)."""
 
 import pytest
+from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.remote.webdriver import By
 
-from tests.conftest import FakeElement
+from tests.conftest import FakeElement, make_browser
 from teachable_dl.auth import (
     EMAIL_SELECTORS,
     OTP_SELECTORS,
@@ -104,3 +105,71 @@ def test_totp_secrets_may_contain_the_spaces_sites_display():
 def test_an_invalid_totp_secret_reports_a_clear_error():
     with pytest.raises(LoginError):
         generate_totp("not-a-valid-base32-secret!!")
+
+
+# --------------------------------------------------- stale element handling
+
+class StaleOnceElement(FakeElement):
+    """Goes stale the first time it is touched, as a re-render would cause."""
+
+    def __init__(self, stale_times=1):
+        super().__init__()
+        self.remaining_stale = stale_times
+
+    def click(self):
+        if self.remaining_stale:
+            self.remaining_stale -= 1
+            raise StaleElementReferenceException("stale element not found")
+        super().click()
+
+
+def _authenticator(mapping, **settings_kwargs):
+    from teachable_dl.auth import Authenticator
+
+    browser = make_browser(mapping, **settings_kwargs)
+    return Authenticator(browser, browser.settings), browser
+
+
+def test_a_field_that_goes_stale_is_relocated_and_filled():
+    """Upstream #19: the login page re-renders once Cloudflare clears, which
+    invalidates any element reference taken beforehand."""
+    fresh = FakeElement()
+    elements = [StaleOnceElement(), fresh]
+
+    class Cycling(dict):
+        def get(self, key, default=None):
+            # Hand out the stale element first, then a fresh one.
+            return [elements[0]] if elements[0].remaining_stale else [fresh]
+
+    auth, browser = _authenticator({})
+    browser.driver.mapping = Cycling()
+    auth._fill_field(EMAIL_SELECTORS, "a@b.c", "email")
+    assert fresh.value == "a@b.c"
+
+
+def test_a_permanently_stale_field_reports_a_clear_error():
+    always_stale = StaleOnceElement(stale_times=99)
+    auth, browser = _authenticator(
+        {(By.ID, "email"): [always_stale]}
+    )
+    with pytest.raises(LoginError) as caught:
+        auth._fill_field(EMAIL_SELECTORS, "a@b.c", "email", attempts=2)
+    assert "kept being replaced" in str(caught.value)
+
+
+def test_fill_lets_stale_propagate_rather_than_swallowing_it():
+    """StaleElementReferenceException is a WebDriverException, so blanket
+    handling hid the one error the caller can recover from."""
+    auth, _ = _authenticator({})
+    with pytest.raises(StaleElementReferenceException):
+        auth._fill(StaleOnceElement(), "value")
+
+
+def test_a_form_with_no_button_is_submitted_with_the_enter_key():
+    """Plenty of login forms carry no submit button and submit on Enter."""
+    from selenium.webdriver.common.keys import Keys
+
+    field = FakeElement()
+    auth, _ = _authenticator({(By.CSS_SELECTOR, "input[type='password']"): [field]})
+    auth._submit()
+    assert field.value == Keys.RETURN

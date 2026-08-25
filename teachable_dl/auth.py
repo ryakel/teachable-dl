@@ -22,7 +22,11 @@ import re
 import time
 from urllib.parse import urlparse, urlunparse
 
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import (
+    StaleElementReferenceException,
+    TimeoutException,
+    WebDriverException,
+)
 from selenium.webdriver.remote.webdriver import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
@@ -184,31 +188,28 @@ class Authenticator:
         self.browser.ensure_alive()
         self.browser.wait_for_body()
 
-        email_element = self.browser.find_first(EMAIL_SELECTORS, timeout=self.settings.timeout)
-        password_element = self.browser.find_first(PASSWORD_SELECTORS, timeout=self.settings.timeout)
+        has_email = self._field_present(EMAIL_SELECTORS)
+        has_password = self._field_present(PASSWORD_SELECTORS)
 
-        if email_element is None and password_element is None:
+        if not has_email and not has_password:
             raise LoginError(
                 "Could not find a login form on "
                 f"{self.browser.current_url!r}. Pass --login_url with the direct "
                 "URL of the sign-in page, or use --man_login_url to log in by hand."
             )
 
-        if email_element is not None:
-            self._fill(email_element, email)
+        if has_email:
+            self._fill_field(EMAIL_SELECTORS, email, "email")
 
         # Some SSO flows ask for the email first and reveal the password field
         # only after that form is submitted.
-        if password_element is None:
+        if not self._field_present(PASSWORD_SELECTORS, timeout=2):
             logger.info("Password field not shown yet, submitting the email step")
             self._submit()
-            password_element = self.browser.find_first(
-                PASSWORD_SELECTORS, timeout=self.settings.timeout
-            )
-            if password_element is None:
+            if not self._field_present(PASSWORD_SELECTORS):
                 raise LoginError("Password field never appeared after submitting the email")
 
-        self._fill(password_element, password)
+        self._fill_field(PASSWORD_SELECTORS, password, "password")
         self._submit()
 
         if self._has_credential_error():
@@ -219,18 +220,67 @@ class Authenticator:
         logger.info("Logged in")
         time.sleep(2)
 
+    def _field_present(self, selectors, timeout=None):
+        wait = self.settings.timeout if timeout is None else timeout
+        return self.browser.find_first(selectors, timeout=wait) is not None
+
+    def _fill_field(self, selectors, value, label, attempts=4):
+        """Locate the field and fill it, re-locating if the page re-renders.
+
+        Holding an element across a re-render is what produced
+        ``stale element reference`` here: the login page settles after the
+        Cloudflare check clears and React re-mounts the form, invalidating any
+        reference taken beforehand. So the element is looked up again on every
+        attempt rather than reused.
+        """
+        last_error = None
+        for attempt in range(1, attempts + 1):
+            element = self.browser.find_first(selectors, timeout=self.settings.timeout)
+            if element is None:
+                raise LoginError(
+                    f"Could not find the {label} field on "
+                    f"{self.browser.current_url!r}"
+                )
+            try:
+                self._fill(element, value)
+                return
+            except StaleElementReferenceException as exc:
+                last_error = exc
+                logger.debug(
+                    "The %s field went stale, re-locating (attempt %s/%s)",
+                    label, attempt, attempts,
+                )
+                time.sleep(0.5)
+
+        raise LoginError(
+            f"The {label} field kept being replaced while filling it in "
+            f"({last_error})"
+        )
+
     def _fill(self, element, value):
-        """Type into a field the way a human would, so React/Stimulus notice."""
+        """Type into a field the way a human would, so React/Stimulus notice.
+
+        Raises ``StaleElementReferenceException`` rather than swallowing it:
+        that exception is a ``WebDriverException`` subclass, so the previous
+        blanket handling here hid the one failure the caller can actually
+        recover from by looking the element up again.
+        """
         try:
             element.click()
+        except StaleElementReferenceException:
+            raise
         except WebDriverException:
             pass
         try:
             element.clear()
+        except StaleElementReferenceException:
+            raise
         except WebDriverException:
             pass
         try:
             element.send_keys(value)
+        except StaleElementReferenceException:
+            raise
         except WebDriverException as exc:
             if is_dead_session_error(exc):
                 raise SessionLostError(str(exc)) from exc
@@ -245,17 +295,58 @@ class Authenticator:
                 value,
             )
 
-    def _submit(self):
-        submit = self.browser.find_first(SUBMIT_SELECTORS, timeout=self.settings.timeout)
-        if submit is None:
-            raise LoginError("Could not find the submit button on the login form")
-        try:
-            submit.click()
-        except WebDriverException as exc:
-            if is_dead_session_error(exc):
-                raise SessionLostError(str(exc)) from exc
-            self.browser.driver.execute_script("arguments[0].click();", submit)
-        self.browser.wait_for_body()
+    def _submit(self, attempts=4):
+        """Submit the form, re-locating the button if the page re-renders."""
+        for attempt in range(1, attempts + 1):
+            submit = self.browser.find_first(SUBMIT_SELECTORS, timeout=self.settings.timeout)
+            if submit is None:
+                # Plenty of login forms have no button at all and submit on
+                # Enter, so try that before giving up.
+                if self._submit_by_keyboard():
+                    return
+                raise LoginError(
+                    "Could not find a submit button, and pressing Enter in the "
+                    f"form did nothing, on {self.browser.current_url!r}"
+                )
+            try:
+                submit.click()
+                self.browser.wait_for_body()
+                return
+            except StaleElementReferenceException:
+                logger.debug(
+                    "The submit button went stale, re-locating (attempt %s/%s)",
+                    attempt, attempts,
+                )
+                time.sleep(0.5)
+            except WebDriverException as exc:
+                if is_dead_session_error(exc):
+                    raise SessionLostError(str(exc)) from exc
+                try:
+                    self.browser.driver.execute_script("arguments[0].click();", submit)
+                    self.browser.wait_for_body()
+                    return
+                except StaleElementReferenceException:
+                    time.sleep(0.5)
+
+        raise LoginError("The submit button kept being replaced before it could be clicked")
+
+    def _submit_by_keyboard(self):
+        """Press Enter in the password (or email) field to submit the form."""
+        from selenium.webdriver.common.keys import Keys
+
+        for selectors in (PASSWORD_SELECTORS, EMAIL_SELECTORS):
+            element = self.browser.find_first(selectors, timeout=2)
+            if element is None:
+                continue
+            try:
+                element.send_keys(Keys.RETURN)
+                self.browser.wait_for_body()
+                logger.debug("Submitted the form with the Enter key")
+                return True
+            except WebDriverException as exc:
+                if is_dead_session_error(exc):
+                    raise SessionLostError(str(exc)) from exc
+        return False
 
     def _has_credential_error(self):
         try:

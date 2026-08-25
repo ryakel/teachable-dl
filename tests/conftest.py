@@ -1,6 +1,7 @@
 """Fakes that let the browser-driven code be tested without a browser."""
 
 import pytest
+from selenium.common.exceptions import NoSuchElementException
 
 from teachable_dl.browser import Browser
 from teachable_dl.config import Settings
@@ -34,7 +35,12 @@ class FakeElement:
 
 
 class FakeDriver:
-    """Answers find_elements from a {(by, selector): [elements]} mapping."""
+    """Answers find_elements from a {(by, selector): [elements]} mapping.
+
+    Every page has a ``<body>``, and a miss raises the exception Selenium
+    really raises, so code that waits for the document behaves as it would
+    against a real driver.
+    """
 
     def __init__(self, mapping=None, cookies=None):
         self.mapping = mapping or {}
@@ -43,12 +49,15 @@ class FakeDriver:
         self.title = "Course"
 
     def find_elements(self, by, selector):
-        return list(self.mapping.get((by, selector), []))
+        found = self.mapping.get((by, selector))
+        if found is None and str(selector).lower() == "body":
+            return [FakeElement(tag="body")]
+        return list(found or [])
 
     def find_element(self, by, selector):
         found = self.find_elements(by, selector)
         if not found:
-            raise LookupError(selector)
+            raise NoSuchElementException(selector)
         return found[0]
 
     def get_cookies(self):

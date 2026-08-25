@@ -146,3 +146,30 @@ def test_a_crypto_backend_is_available_for_aes128_streams():
 
     assert Cryptodome, "pycryptodomex is missing; AES-128 downloads would be serialised"
     assert Cryptodome.AES is not None
+
+
+def test_no_resume_refetches_subtitles(tmp_path, settings, with_ffmpeg):
+    """--no-resume re-downloaded the video but kept the old subtitle beside it,
+    because this was the one skip check that never consulted the setting."""
+    from unittest import mock
+
+    from teachable_dl.media import MediaDownloader
+
+    stale = tmp_path / "01-Intro.en.vtt"
+    stale.write_bytes(b"WEBVTT\n\nstale cue\n")
+
+    info = {"requested_subtitles": {"en": {"url": "https://cdn/sub.vtt", "ext": "vtt"}}}
+
+    def run(resume):
+        settings.resume = resume
+        downloader = MediaDownloader(settings)
+        with mock.patch.object(downloader, "_fetch_subtitle", return_value=b"WEBVTT\n\nfresh\n") as fetch:
+            with mock.patch("yt_dlp.YoutubeDL") as ydl:
+                ydl.return_value.__enter__.return_value.extract_info.return_value = info
+                ydl.return_value.__enter__.return_value.sanitize_info.return_value = info
+                downloader.download_subtitles("https://x", "01-Intro", str(tmp_path))
+        return fetch.call_count
+
+    assert run(resume=True) == 0, "resume should keep the existing subtitle"
+    assert run(resume=False) == 1, "--no-resume should re-fetch it"
+    assert b"fresh" in stale.read_bytes()

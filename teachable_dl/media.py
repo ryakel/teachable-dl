@@ -295,7 +295,14 @@ class MediaDownloader:
 
             filename = f"{basename}.{lang}.{extension}"
             file_path = os.path.join(output_path, filename)
-            if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
+            # Every other skip check consults settings.resume; this one did not,
+            # so --no-resume re-fetched the video but silently kept a stale
+            # subtitle sitting next to it.
+            if (
+                self.settings.resume
+                and os.path.isfile(file_path)
+                and os.path.getsize(file_path) > 0
+            ):
                 logger.info("Skipping existing subtitle: %s", filename)
                 written.append(file_path)
                 continue

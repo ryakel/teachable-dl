@@ -31,6 +31,9 @@ class Settings:
     #: your own browser is signed in.
     user_data_dir: str | None = None
     profile_directory: str | None = None
+    #: Drive the real profile in place rather than a copy. Requires Chrome to
+    #: be fully quit and touches the person's actual browser data.
+    use_live_profile: bool = False
 
     #: Reuse an existing browser session instead of logging in at all.
     cookies_file: str | None = None

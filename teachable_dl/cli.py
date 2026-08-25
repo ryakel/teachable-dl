@@ -88,6 +88,10 @@ def build_parser():
                               "quit first, since two processes cannot share a profile. "
                               "This is usually the simplest fix when the automated "
                               "browser is not logged in but yours is.")
+    browser.add_argument("--chrome-profile-live", action="store_true",
+                         help="Drive the real profile in place instead of a copy. "
+                              "Needs Chrome fully quit and touches your actual "
+                              "browser data; the default copy avoids both.")
     browser.add_argument("--chrome-profile-name", metavar="NAME",
                          help="Which profile inside that directory to use, e.g. "
                               "'Default' or 'Profile 1'. Defaults to whatever Chrome "
@@ -225,6 +229,7 @@ def settings_from_args(args, email, password, totp_secret):
         ascii_filenames=args.ascii_filenames,
         user_data_dir=_resolve_chrome_profile(args.chrome_profile),
         profile_directory=args.chrome_profile_name,
+        use_live_profile=args.chrome_profile_live,
         stealth=not args.no_stealth,
         uc_reconnect_time=args.uc_reconnect_time,
         headless=args.headless,
@@ -309,6 +314,7 @@ def main(argv=None):
     # Imported here so that --help and --rewrite-only work without a browser stack.
     from .browser import (
         BrowserNotFoundError,
+        BrowserProfileError,
         BrowserProfileInUseError,
         MissingRosettaError,
     )
@@ -321,8 +327,8 @@ def main(argv=None):
     except KeyboardInterrupt:
         logger.error("Interrupted")
         return 130
-    except (BrowserNotFoundError, BrowserProfileInUseError,
-            MissingRosettaError) as exc:
+    except (BrowserNotFoundError, BrowserProfileError,
+            BrowserProfileInUseError, MissingRosettaError) as exc:
         # A missing browser is a setup problem, not a crash: no stack trace.
         logger.error("%s", exc)
         return 1

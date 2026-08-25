@@ -1,6 +1,7 @@
 """Browser helpers: session recovery and page-to-PDF rendering."""
 
 import base64
+import pathlib
 
 import pytest
 
@@ -353,51 +354,6 @@ def test_by_default_no_profile_is_requested(monkeypatch):
     assert "user_data_dir" not in seen
 
 
-def test_a_real_profile_is_passed_through_and_expanded(monkeypatch):
-    """A fresh profile has no cookies and no login, which is why an automated
-    browser sees a school's public pages while the person's own browser is
-    signed in."""
-    from teachable_dl.browser import Browser
-    from teachable_dl.config import Settings
-
-    seen = {}
-
-    class FakeDriver:
-        def __init__(self, **kwargs):
-            seen.update(kwargs)
-
-        def set_page_load_timeout(self, value):
-            pass
-
-        def execute_script(self, script):
-            return "UA/1.0"
-
-    monkeypatch.setattr("teachable_dl.browser.Driver", FakeDriver)
-    browser = Browser.__new__(Browser)
-    browser.settings = Settings(user_data_dir="~/Chrome", profile_directory="Profile 1")
-    browser.start()
-
-    assert not seen["user_data_dir"].startswith("~")
-    assert seen["chromium_arg"] == "--profile-directory=Profile 1"
-
-
-def test_a_profile_already_open_says_to_quit_chrome(monkeypatch):
-    """Two processes cannot share one profile, and the raw error does not say so."""
-    from teachable_dl.browser import Browser, BrowserProfileInUseError
-    from teachable_dl.config import Settings
-
-    monkeypatch.setattr(
-        "teachable_dl.browser.Driver",
-        lambda **k: (_ for _ in ()).throw(
-            Exception("user data directory is already in use")
-        ),
-    )
-    browser = Browser.__new__(Browser)
-    browser.settings = Settings(user_data_dir="/tmp/profile")
-
-    with pytest.raises(BrowserProfileInUseError) as caught:
-        browser.start()
-    assert "Quit Chrome" in str(caught.value)
 
 
 def test_that_error_is_not_raised_when_no_profile_was_requested(monkeypatch):
@@ -415,33 +371,6 @@ def test_that_error_is_not_raised_when_no_profile_was_requested(monkeypatch):
         browser.start()
     assert not isinstance(caught.value, BrowserProfileInUseError)
 
-
-def test_a_real_profile_turns_undetected_mode_off(monkeypatch):
-    """UC mode manages its own throwaway profile; handing it a real one leaves
-    Chrome sitting on its start page doing nothing at all."""
-    from teachable_dl.browser import Browser
-    from teachable_dl.config import Settings
-
-    seen = {}
-
-    class FakeDriver:
-        def __init__(self, **kwargs):
-            seen.update(kwargs)
-
-        def set_page_load_timeout(self, value):
-            pass
-
-        def execute_script(self, script):
-            return "UA/1.0"
-
-    monkeypatch.setattr("teachable_dl.browser.Driver", FakeDriver)
-    browser = Browser.__new__(Browser)
-    browser.settings = Settings(user_data_dir="/tmp/profile", stealth=True)
-    browser.start()
-
-    assert seen["uc"] is False
-    # Navigation must follow suit, or it would still try the UC reconnect path.
-    assert browser.settings.stealth is False
 
 
 def test_without_a_profile_undetected_mode_is_untouched(monkeypatch):
@@ -465,3 +394,110 @@ def test_without_a_profile_undetected_mode_is_untouched(monkeypatch):
     browser.settings = Settings(stealth=True)
     browser.start()
     assert seen["uc"] is True
+
+
+def _fake_chrome_profile(tmp_path, name="Default"):
+    """A directory shaped like a real Chrome user-data dir."""
+    profile = tmp_path / name
+    profile.mkdir(parents=True)
+    (profile / "Preferences").write_text("{}", encoding="utf-8")
+    (profile / "Cookies").write_bytes(b"cookie-db")
+    (tmp_path / "Local State").write_text("{}", encoding="utf-8")
+    (profile / "SingletonLock").write_text("lock", encoding="utf-8")
+    return tmp_path
+
+
+class RecordingDriver:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        RecordingDriver.last = kwargs
+
+    def set_page_load_timeout(self, value):
+        pass
+
+    def execute_script(self, script):
+        return "UA/1.0"
+
+
+def _start_with(monkeypatch, settings):
+    from teachable_dl.browser import Browser
+
+    monkeypatch.setattr("teachable_dl.browser.Driver", RecordingDriver)
+    browser = Browser.__new__(Browser)
+    browser.settings = settings
+    browser._profile_copy = None
+    browser.start()
+    return browser, RecordingDriver.last
+
+
+def test_a_profile_is_passed_as_raw_chrome_flags(tmp_path, monkeypatch):
+    """SeleniumBase's own user_data_dir parameter refuses the directory
+    outright, so the flags go to Chrome directly instead."""
+    from teachable_dl.config import Settings
+
+    source = _fake_chrome_profile(tmp_path)
+    _, kwargs = _start_with(monkeypatch, Settings(user_data_dir=str(source)))
+
+    assert "user_data_dir" not in kwargs
+    assert "--user-data-dir=" in kwargs["chromium_arg"]
+    assert "--profile-directory=Default" in kwargs["chromium_arg"]
+
+
+def test_the_real_profile_is_copied_not_driven(tmp_path, monkeypatch):
+    """Chrome locks a live profile and background processes keep holding it, so
+    the copy is what makes this work at all."""
+    from teachable_dl.config import Settings
+
+    source = _fake_chrome_profile(tmp_path)
+    browser, kwargs = _start_with(monkeypatch, Settings(user_data_dir=str(source)))
+
+    used = kwargs["chromium_arg"].split("--user-data-dir=")[1].split(",")[0]
+    assert used != str(source), "must not drive the real profile"
+    assert browser._profile_copy == used
+    # The copy carries the session and none of the locks.
+    assert (pathlib.Path(used) / "Default" / "Cookies").is_file()
+    assert not (pathlib.Path(used) / "Default" / "SingletonLock").exists()
+
+
+def test_the_copy_is_removed_on_quit(tmp_path, monkeypatch):
+    from teachable_dl.config import Settings
+
+    source = _fake_chrome_profile(tmp_path)
+    browser, _ = _start_with(monkeypatch, Settings(user_data_dir=str(source)))
+    copy = browser._profile_copy
+    assert pathlib.Path(copy).exists()
+
+    browser.driver = None
+    browser.quit()
+    assert not pathlib.Path(copy).exists()
+
+
+def test_live_mode_drives_the_real_profile(tmp_path, monkeypatch):
+    from teachable_dl.config import Settings
+
+    source = _fake_chrome_profile(tmp_path)
+    browser, kwargs = _start_with(
+        monkeypatch, Settings(user_data_dir=str(source), use_live_profile=True)
+    )
+    assert f"--user-data-dir={source}" in kwargs["chromium_arg"]
+    assert browser._profile_copy is None
+
+
+def test_a_profile_turns_undetected_mode_off(tmp_path, monkeypatch):
+    """UC mode manages its own throwaway profile and cannot attach to another."""
+    from teachable_dl.config import Settings
+
+    source = _fake_chrome_profile(tmp_path)
+    browser, kwargs = _start_with(
+        monkeypatch, Settings(user_data_dir=str(source), stealth=True)
+    )
+    assert kwargs["uc"] is False
+    assert browser.settings.stealth is False
+
+
+def test_a_directory_that_is_not_a_profile_is_reported(tmp_path, monkeypatch):
+    from teachable_dl.browser import BrowserProfileError
+    from teachable_dl.config import Settings
+
+    with pytest.raises(BrowserProfileError):
+        _start_with(monkeypatch, Settings(user_data_dir=str(tmp_path / "nowhere")))

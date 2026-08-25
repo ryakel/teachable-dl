@@ -79,6 +79,10 @@ class BrowserProfileInUseError(RuntimeError):
     """The requested Chrome profile is open in another process."""
 
 
+class BrowserProfileError(RuntimeError):
+    """The requested Chrome profile could not be prepared."""
+
+
 def default_chrome_profile():
     """Where Chrome keeps its profiles on this platform."""
     home = os.path.expanduser("~")
@@ -168,6 +172,8 @@ class Browser:
         self.settings = settings
         self.driver = None
         self.restarts = 0
+        #: Temp directory holding a copy of the user's Chrome profile.
+        self._profile_copy = None
         #: Called after a restart so the caller can log back in.
         self.on_restart = None
         self.start()
@@ -197,14 +203,17 @@ class Browser:
         if self.settings.user_agent:
             kwargs["agent"] = self.settings.user_agent
 
-        # Undetected mode otherwise starts a throwaway profile: no cookies, no
-        # history, no login. Pointing it at a real profile is what makes the
-        # automated browser the same browser the person is already signed in to.
-        if self.settings.user_data_dir:
-            kwargs["user_data_dir"] = os.path.expanduser(self.settings.user_data_dir)
-            logger.info("Using the Chrome profile at %s", kwargs["user_data_dir"])
-        if self.settings.profile_directory:
-            kwargs["chromium_arg"] = f"--profile-directory={self.settings.profile_directory}"
+        # A fresh profile has no cookies and no login, which is why an
+        # automated browser sees a school's public pages while the person's own
+        # browser is signed in. Point Chrome at their profile instead.
+        #
+        # The flags go through chromium_arg rather than SeleniumBase's own
+        # user_data_dir parameter: that parameter refuses the directory outright
+        # ("Unable to set user_data_dir while starting Chrome!") and the launch
+        # then dies on a missing DevToolsActivePort.
+        profile_args = self._prepare_profile()
+        if profile_args:
+            kwargs["chromium_arg"] = ",".join(profile_args)
         if self.settings.headless:
             # ``headless2`` keeps a real renderer, which undetected-chromedriver
             # and Cloudflare's challenge both need. Plain ``headless`` fails the
@@ -260,6 +269,40 @@ class Browser:
         self._adopt_real_user_agent()
         return self.driver
 
+    def _prepare_profile(self):
+        """Chrome flags pointing at the profile, working from a copy by default.
+
+        Copying sidesteps every way a live profile fails: Chrome's singleton
+        locks, background processes still holding it after the last window
+        closes, and the risk of touching someone's real browser data. It also
+        means they can keep browsing while a download runs.
+        """
+        if not self.settings.user_data_dir:
+            return []
+
+        from .profile import ProfileError, prepare_copy
+
+        source = os.path.expanduser(self.settings.user_data_dir)
+
+        if self.settings.use_live_profile:
+            logger.warning(
+                "Using the live Chrome profile at %s. Chrome must be fully quit, "
+                "and this touches your real browser data.", source,
+            )
+            directory, name = source, self.settings.profile_directory
+        else:
+            try:
+                directory, name = prepare_copy(source, self.settings.profile_directory)
+            except ProfileError as exc:
+                raise BrowserProfileError(str(exc)) from exc
+            self._profile_copy = directory
+            logger.info("Working from a copy of your Chrome profile at %s", directory)
+
+        args = [f"--user-data-dir={directory}"]
+        if name:
+            args.append(f"--profile-directory={name}")
+        return args
+
     def _adopt_real_user_agent(self):
         """Use the browser's own user agent for every request we make.
 
@@ -282,6 +325,7 @@ class Browser:
         logger.debug("Using user agent: %s", self.settings.user_agent)
 
     def quit(self):
+        self._discard_profile_copy()
         if self.driver is None:
             return
         try:
@@ -290,6 +334,16 @@ class Browser:
             logger.debug("Ignoring error while quitting driver: %s", exc)
         finally:
             self.driver = None
+
+    def _discard_profile_copy(self):
+        path = getattr(self, "_profile_copy", None)
+        if not path:
+            return
+        from .profile import discard_copy
+
+        logger.debug("Removing the profile copy at %s", path)
+        discard_copy(path)
+        self._profile_copy = None
 
     # -------------------------------------------------------------- liveness
 

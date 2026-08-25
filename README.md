@@ -270,6 +270,28 @@ export TEACHABLE_PASSWORD='your-password'
 python3 main.py --url <course_url>
 ```
 
+### Using the browser you are already signed in to
+
+The simplest route, and usually the right one. The automated browser normally
+starts a blank profile — no cookies, no history, no login — which is why it can
+land on a school's public pages while your own browser is signed in.
+`--chrome-profile` points it at your real Chrome profile instead:
+
+```sh
+python3 main.py --url <course_url> --chrome-profile
+```
+
+Nothing is exported and no credentials are typed anywhere: it is the session
+already in your browser. That covers single sign-on, emailed codes and bot
+checks in one go, because your profile already carries whatever the site
+issued.
+
+It works from a **copy** of the profile, so your real browser data is never
+touched and Chrome can stay open. Add `--chrome-profile-name 'Profile 1'` for a
+non-default profile, a path after the flag if Chrome lives somewhere unusual,
+or `--chrome-profile-live` to drive the profile in place (which does require
+Chrome to be fully quit).
+
 ### Reusing a session you already have
 
 Automated login cannot cover every school. Teachable's own single sign-on puts

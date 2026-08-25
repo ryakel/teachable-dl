@@ -17,3 +17,10 @@ yt-dlp>=2026.8.19
 
 requests>=2.34.2
 pyotp>=2.10.0
+
+# Not optional in practice. Teachable's video host serves AES-128 encrypted
+# HLS, and without a crypto backend yt-dlp cannot decrypt it itself, so it
+# hands the whole stream to ffmpeg -- which downloads sequentially and
+# silently discards the parallel-fragment setting. Installing this keeps the
+# native downloader, and with it the speed.
+pycryptodomex>=3.20.0

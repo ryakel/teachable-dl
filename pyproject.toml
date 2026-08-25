@@ -16,6 +16,9 @@ dependencies = [
     "yt-dlp>=2026.8.19",
     "requests>=2.34.2",
     "pyotp>=2.10.0",
+    # Lets yt-dlp decrypt AES-128 HLS itself instead of delegating the whole
+    # stream to ffmpeg, which would serialise the download.
+    "pycryptodomex>=3.20.0",
 ]
 
 [project.optional-dependencies]

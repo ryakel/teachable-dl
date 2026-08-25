@@ -125,6 +125,11 @@ Check `courses/<Course>/<chapter>/`:
 - Any subtitles as `.vtt`.
 - An attachments folder, if that lecture has attachments.
 
+If you see `The stream has AES-128 encryption and pycryptodomex is not
+available`, the download has been handed to ffmpeg and is running
+single-threaded. `pip install -r requirements.txt` again — pycryptodomex is a
+declared dependency for exactly this reason.
+
 If the video downloads slowly, note the speed — parallel fragment downloading
 was silently disabled upstream, so this should be much faster now. Tune with
 `--concurrent-fragments N` if the server rate-limits you.

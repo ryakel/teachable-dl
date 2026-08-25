@@ -135,3 +135,14 @@ def test_deprecated_all_subs_alias_is_not_used(settings, with_ffmpeg):
     assert opts["subtitleslangs"] == ["all"]
     assert opts["writesubtitles"] is True
     assert opts["skip_download"] is True
+
+
+def test_a_crypto_backend_is_available_for_aes128_streams():
+    """Teachable's host serves AES-128 HLS. Without a crypto backend yt-dlp
+    delegates the whole stream to ffmpeg, which downloads sequentially and
+    ignores concurrent_fragment_downloads -- silently undoing the fix for
+    upstream #59. Declaring pycryptodomex is what keeps the fast path."""
+    from yt_dlp.dependencies import Cryptodome
+
+    assert Cryptodome, "pycryptodomex is missing; AES-128 downloads would be serialised"
+    assert Cryptodome.AES is not None

@@ -109,11 +109,13 @@ LOGGED_IN_SELECTORS = [
     (By.CSS_SELECTOR, ".user-avatar, .current-user, #current-user"),
 ]
 
-#: Conversely, an offer to sign in or enrol means we are not.
+#: Deliberately narrow. A signed-in Teachable page routinely links to sign-up
+#: and enrolment for *other* courses, so treating those as proof of being
+#: anonymous invents failures on a perfectly good session. Only an actual login
+#: form counts.
 LOGGED_OUT_SELECTORS = [
-    (By.CSS_SELECTOR, "a[href*='/sign_in']"),
-    (By.CSS_SELECTOR, "a[href*='/sign_up']"),
-    (By.CSS_SELECTOR, "a[href*='/enroll']"),
+    (By.CSS_SELECTOR, "form[action*='/sign_in']"),
+    (By.CSS_SELECTOR, "form[action*='/identity/login']"),
 ]
 
 BAD_CREDENTIALS_MARKERS = (
@@ -222,42 +224,45 @@ class Authenticator:
         return True
 
     def verify_logged_in(self, course_url):
-        """Confirm a real session exists, rather than trusting the form submit.
+        """Sanity-check the session without getting in the way.
 
-        A school's page can accept a submission, or simply have no form where we
-        looked, and still leave us anonymous. Anonymous browsing of a course
-        shows only its free preview lectures, which looks like a successful but
-        oddly small download.
+        An earlier version navigated to the course URL to run this check, which
+        threw away a perfectly good page, followed whatever redirect the school
+        felt like serving, and then judged *that*. On a school whose course URL
+        bounces to its sales page it reported a working session as broken.
+
+        So: judge the page we are already on, and only refuse to continue when
+        the browser is unambiguously sitting on a login form. Anything less
+        certain is a warning -- a false failure here is worse than a late one,
+        because the curriculum parse that follows will show the truth anyway.
         """
-        self.browser.get(course_url)
-        self.browser.handle_cloudflare_if_present()
+        current = self.browser.current_url or ""
 
-        probe = min(3, self.settings.timeout)
-        signed_out = self.browser.find_first(LOGGED_OUT_SELECTORS, timeout=probe)
-        signed_in = self.browser.find_first(LOGGED_IN_SELECTORS, timeout=probe)
+        if looks_like_login_page(current):
+            raise LoginError(
+                f"The browser is sitting on a sign-in page: {current!r}\n"
+                "  Whatever was tried did not produce a session, so only free "
+                "preview lectures would be downloaded.\n"
+                "  If your school signs you in through 'Log in with Teachable', "
+                "a social login or emailed codes, the surest routes are:\n"
+                "    --cookies FILE            reuse a session already in your browser\n"
+                f"    --man_login_url '{course_url}'   sign in by hand"
+            )
 
-        if signed_in is not None:
+        if self.browser.find_first(LOGGED_IN_SELECTORS, timeout=2) is not None:
             logger.info("Confirmed an authenticated session")
             return True
 
-        if signed_out is not None or looks_like_login_page(self.browser.current_url):
+        if self.browser.find_first(LOGGED_OUT_SELECTORS, timeout=1) is not None:
             raise LoginError(
-                "The browser is not logged in: "
-                f"{self.browser.current_url!r} still offers a way to sign in.\n"
-                "  Only free preview lectures are visible to an anonymous "
-                "visitor, so the download would silently be incomplete.\n"
-                "  If your school uses 'Log in with Teachable', a social login, "
-                "or any single sign-on, the email/password form on the page is "
-                "not the one you use. Log in yourself instead:\n"
-                f"    --man_login_url '{course_url}'\n"
-                "  That opens a browser, waits for you to sign in however you "
-                "normally do, and starts downloading once you reach that page."
+                f"A sign-in form is showing on {current!r}, so the browser is "
+                "not logged in.\n"
+                "  Only free preview lectures would be downloaded."
             )
 
-        logger.warning(
-            "Could not positively confirm the session on %s. Continuing, but if "
-            "only a few lectures are found, you are probably not logged in.",
-            self.browser.current_url,
+        logger.info(
+            "Could not positively confirm the session from this page. Continuing; "
+            "if the lecture count looks short, you are probably not logged in."
         )
         return False
 

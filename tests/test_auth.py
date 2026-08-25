@@ -177,19 +177,44 @@ def test_a_form_with_no_button_is_submitted_with_the_enter_key():
 
 # ------------------------------------------------------ login verification
 
-def test_a_page_still_offering_sign_in_is_not_a_session():
-    """The run reported "Logged in" while anonymous, then scraped only the free
-    preview lectures and called that success."""
+def test_an_actual_sign_in_form_means_no_session():
+    """A real login form is the only page-content signal worth failing on."""
     from teachable_dl.auth import LoginError
 
-    auth, _ = _authenticator({(By.CSS_SELECTOR, "a[href*='/sign_in']"): [FakeElement()]})
+    auth, _ = _authenticator({(By.CSS_SELECTOR, "form[action*='/sign_in']"): [FakeElement()]})
     with pytest.raises(LoginError) as caught:
         auth.verify_logged_in("https://school.teachable.com/courses/enrolled/1")
+    assert "not logged in" in str(caught.value)
 
-    message = str(caught.value)
-    assert "not logged in" in message
-    assert "--man_login_url" in message          # names the way out
-    assert "free preview" in message             # explains the symptom
+
+def test_links_to_sign_up_or_enrol_do_not_condemn_a_good_session():
+    """A signed-in Teachable page links to enrolment for other courses. Reading
+    that as proof of being anonymous failed a session that was working."""
+    auth, browser = _authenticator({
+        (By.CSS_SELECTOR, "a[href*='/sign_up']"): [FakeElement()],
+        (By.CSS_SELECTOR, "a[href*='/enroll']"): [FakeElement()],
+    })
+    browser.driver.current_url = "https://school.teachable.com/courses/enrolled/1"
+    assert auth.verify_logged_in("https://school.teachable.com/courses/enrolled/1") is False
+
+
+def test_verification_does_not_navigate_away_from_a_working_page():
+    """Re-navigating threw away the logged-in page and followed a redirect to
+    the school's sales page, then judged that instead."""
+    auth, browser = _authenticator({})
+    browser.driver.current_url = "https://school.teachable.com/courses/enrolled/1"
+    auth.verify_logged_in("https://school.teachable.com/courses/enrolled/1")
+    assert browser.driver.current_url == "https://school.teachable.com/courses/enrolled/1"
+
+
+def test_sitting_on_a_login_page_still_fails_loudly():
+    from teachable_dl.auth import LoginError
+
+    auth, browser = _authenticator({})
+    browser.driver.current_url = "https://sso.teachable.com/secure/1/identity/login/password"
+    with pytest.raises(LoginError) as caught:
+        auth.verify_logged_in("https://school.teachable.com/courses/enrolled/1")
+    assert "sign-in page" in str(caught.value)
 
 
 def test_a_sign_out_link_confirms_the_session():
@@ -204,10 +229,12 @@ def test_an_ambiguous_page_warns_rather_than_guessing():
     assert auth.verify_logged_in("https://school.teachable.com/courses/enrolled/1") is False
 
 
-def test_the_sso_advice_names_the_login_styles_that_break_the_form():
+def test_the_advice_names_the_routes_that_actually_work():
     from teachable_dl.auth import LoginError
 
-    auth, _ = _authenticator({(By.CSS_SELECTOR, "a[href*='/sign_up']"): [FakeElement()]})
+    auth, browser = _authenticator({})
+    browser.driver.current_url = "https://sso.teachable.com/secure/1/identity/login/password"
     with pytest.raises(LoginError) as caught:
         auth.verify_logged_in("https://school.teachable.com/courses/enrolled/1")
-    assert "single sign-on" in str(caught.value).lower()
+    message = str(caught.value)
+    assert "--cookies" in message and "--man_login_url" in message

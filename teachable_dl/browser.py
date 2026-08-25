@@ -33,6 +33,22 @@ from seleniumbase import Driver
 
 logger = logging.getLogger(__name__)
 
+#: How Cloudflare's interstitial shows up in the DOM. Matching only
+#: ``#challenge-stage`` (the original check) misses the Turnstile widget and the
+#: managed-challenge page, which is how a run ends up looping on "Performing
+#: security verification" forever.
+CHALLENGE_SELECTORS = [
+    (By.ID, "challenge-stage"),
+    (By.ID, "challenge-running"),
+    (By.ID, "cf-chl-widget"),
+    (By.CSS_SELECTOR, "iframe[src*='challenges.cloudflare.com']"),
+    (By.CSS_SELECTOR, "[class*='cf-turnstile']"),
+    (By.CSS_SELECTOR, "#cf-wrapper, #cf-error-details"),
+]
+
+#: Page titles Cloudflare serves while challenging.
+CHALLENGE_TITLES = ("just a moment", "attention required", "security verification")
+
 #: Substrings that mean "the browser is gone, stop trying to talk to it".
 _DEAD_SESSION_MARKERS = (
     "invalid session id",
@@ -262,7 +278,7 @@ class Browser:
         for attempt in range(retries + 1):
             try:
                 self.ensure_alive()
-                self.driver.get(url)
+                self._navigate(url)
                 self.wait_for_body()
                 return True
             except Exception as exc:
@@ -278,6 +294,25 @@ class Browser:
                 )
                 time.sleep(2)
         raise SessionLostError(f"Could not navigate to {url}: {last_error}")
+
+    def _navigate(self, url):
+        """Load a URL, hiding the automation from Cloudflare where we can.
+
+        ``driver.get`` leaves chromedriver attached for the whole load, and that
+        connection is exactly what Cloudflare's bot check notices -- the
+        challenge then never clears and the run loops on "Performing security
+        verification". SeleniumBase's UC mode can drop the connection across the
+        navigation and reattach afterwards, which is what gets through.
+        """
+        if self.settings.stealth and hasattr(self.driver, "uc_open_with_reconnect"):
+            try:
+                self.driver.uc_open_with_reconnect(url, self.settings.uc_reconnect_time)
+                return
+            except Exception as exc:
+                if is_dead_session_error(exc):
+                    raise
+                logger.debug("uc_open_with_reconnect failed (%s), using a plain load", exc)
+        self.driver.get(url)
 
     @property
     def current_url(self):
@@ -344,64 +379,115 @@ class Browser:
         except (TypeError, ValueError):
             return 0
 
-    def bypass_cloudflare(self):
-        """Solve the interstitial without orphaning the driver on a closed tab.
-
-        The original implementation compared browser versions as *strings*
-        (``"99" < "115"`` is False), then closed the original tab. If any step
-        raised, the driver was left on a dead handle.
-        """
-        if self.browser_major_version() < 115:
-            logger.debug("Browser too old for the automated challenge flow, skipping")
-            return
-
-        if not self.check_elem_exists(By.ID, "challenge-stage", timeout=3):
-            logger.debug("No Cloudflare challenge present")
-            return
-
-        logger.info("Bypassing Cloudflare")
-        original_handles = list(self.driver.window_handles)
+    def on_challenge_page(self):
+        """Is Cloudflare currently challenging us?"""
         try:
-            self.driver.find_element(By.ID, "challenge-stage").click()
-            current = self.driver.current_url
-            self.driver.execute_script("window.open(arguments[0], '_blank');", current)
-
-            new_handles = [h for h in self.driver.window_handles if h not in original_handles]
-            if not new_handles:
-                logger.warning("Could not open a second tab for the challenge")
-                return
-
-            if self.settings.headless:
-                logger.warning(
-                    "A Cloudflare challenge appeared but the browser is headless; "
-                    "re-run without --headless if the download stalls"
-                )
-            else:
-                input(
-                    "\033[93mWarning: Bypassing Cloudflare\n"
-                    "please click on the captcha checkbox if not done already "
-                    "and press enter to continue (do not close any of the tabs)\033[0m"
-                )
-
-            # Close the challenged tab, then settle on the fresh one.
-            for handle in original_handles:
-                try:
-                    self.driver.switch_to.window(handle)
-                    self.driver.close()
-                except WebDriverException as exc:
-                    logger.debug("Could not close stale tab: %s", exc)
-            self.driver.switch_to.window(new_handles[0])
-        except Exception as exc:
-            logger.error("Could not bypass Cloudflare: %s", exc, exc_info=self.settings.verbose)
-        finally:
-            # Whatever happened above, never leave the caller on a dead handle.
+            title = (self.driver.title or "").lower()
+        except WebDriverException:
+            title = ""
+        if any(marker in title for marker in CHALLENGE_TITLES):
+            return True
+        for by, selector in CHALLENGE_SELECTORS:
             try:
-                self.ensure_window()
-            except SessionLostError:
-                logger.error("Browser lost during the Cloudflare bypass")
+                if self.driver.find_elements(by, selector):
+                    return True
+            except WebDriverException:
+                continue
+        return False
+
+    def bypass_cloudflare(self, attempts=3):
+        """Clear a Cloudflare interstitial.
+
+        The original approach opened a duplicate tab, asked the user to click
+        the checkbox, then closed the first tab. That misses the common case:
+        the challenge loops because chromedriver is attached, so no amount of
+        clicking helps. UC mode's own handlers disconnect the driver around the
+        click, which is what actually clears it.
+        """
+        if not self.on_challenge_page():
+            logger.debug("No Cloudflare challenge present")
+            return True
+
+        logger.info("Cloudflare challenge detected, attempting to clear it")
+
+        for attempt in range(1, attempts + 1):
+            if self.settings.stealth and self._try_uc_captcha_click():
+                if not self.on_challenge_page():
+                    logger.info("Cloudflare challenge cleared")
+                    return True
+
+            # Reloading through the reconnecting path often clears a managed
+            # challenge on its own.
+            try:
+                self._navigate(self.driver.current_url)
+            except Exception as exc:
+                logger.debug("Reload during the challenge failed: %s", exc)
+
+            time.sleep(2)
+            if not self.on_challenge_page():
+                logger.info("Cloudflare challenge cleared")
+                return True
+
+            logger.warning("Still on the challenge page (attempt %s/%s)", attempt, attempts)
+
+        return self._ask_user_to_solve_challenge()
+
+    def _try_uc_captcha_click(self):
+        """Let SeleniumBase click the Turnstile checkbox with the driver detached."""
+        for method in ("uc_gui_click_captcha", "uc_gui_handle_captcha"):
+            handler = getattr(self.driver, method, None)
+            if handler is None:
+                continue
+            try:
+                logger.info("Trying %s", method)
+                handler()
+                return True
+            except Exception as exc:
+                message = str(exc).lower()
+                if "permission" in message or "accessibility" in message:
+                    logger.warning(
+                        "%s needs permission to control the mouse. On macOS grant "
+                        "your terminal Accessibility access in System Settings > "
+                        "Privacy & Security > Accessibility, then retry.",
+                        method,
+                    )
+                else:
+                    logger.debug("%s failed: %s", method, exc)
+        return False
+
+    def _ask_user_to_solve_challenge(self):
+        """Last resort: let a human click it, since we are already headed."""
+        if self.settings.headless:
+            logger.error(
+                "Cloudflare is still challenging and the browser is headless, so "
+                "nobody can click the checkbox. Re-run without --headless."
+            )
+            return False
+
+        try:
+            input(
+                "\033[93mCloudflare is still asking for verification.\n"
+                "Please solve the challenge in the browser window, wait for the "
+                "course page to load, then press Enter here.\033[0m"
+            )
+        except (EOFError, KeyboardInterrupt):
+            return False
+
+        try:
+            self.ensure_window()
+        except SessionLostError:
+            logger.error("Browser was lost while solving the challenge")
+            return False
+
+        if self.on_challenge_page():
+            logger.error("Still on the Cloudflare challenge page")
+            return False
+
+        logger.info("Cloudflare challenge cleared")
+        return True
 
     def handle_cloudflare_if_present(self):
-        if self.check_elem_exists(By.ID, "challenge-stage", timeout=3):
+        if self.on_challenge_page():
             self.bypass_cloudflare()
 
     # ---------------------------------------------------------------- extras

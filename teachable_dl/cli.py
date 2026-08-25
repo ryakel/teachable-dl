@@ -69,6 +69,11 @@ def build_parser():
                               "chromedriver on macOS, so Apple Silicon needs "
                               "Rosetta 2. If your school has no Cloudflare "
                               "interstitial, this avoids that requirement.")
+    browser.add_argument("--uc-reconnect-time", type=float, default=4.0, metavar="SECONDS",
+                         help="How long to leave the browser detached while a page "
+                              "loads in undetected mode (default: 4). Raise it to 8 "
+                              "or 10 if you get stuck in a Cloudflare verification "
+                              "loop.")
     browser.add_argument("--headless", action="store_true",
                          help="Run the browser headless so it stops stealing focus")
     browser.add_argument("--user-agent", default=DEFAULT_USER_AGENT,
@@ -171,6 +176,7 @@ def settings_from_args(args, email, password, totp_secret):
         output_dir=os.path.abspath(args.output_dir),
         ascii_filenames=args.ascii_filenames,
         stealth=not args.no_stealth,
+        uc_reconnect_time=args.uc_reconnect_time,
         headless=args.headless,
         user_agent=args.user_agent,
         timeout=args.timeout,

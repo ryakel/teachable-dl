@@ -32,6 +32,9 @@ class Settings:
     #: on macOS, which is why Apple Silicon needs Rosetta 2. Turn it off to use
     #: a plain driver where the school has no such challenge.
     stealth: bool = True
+    #: Seconds to leave chromedriver detached while a page loads in UC mode.
+    #: Longer gives Cloudflare's check more time to settle before we reattach.
+    uc_reconnect_time: float = 4.0
     headless: bool = False
     user_agent: str = DEFAULT_USER_AGENT
     timeout: int = 10

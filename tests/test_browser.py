@@ -234,3 +234,94 @@ def test_the_rosetta_error_offers_both_ways_out(monkeypatch):
     message = str(caught.value)
     assert "softwareupdate --install-rosetta" in message
     assert "--no-stealth" in message
+
+
+# ------------------------------------------------------ cloudflare challenge
+
+class ChallengeDriver(FakeDriver):
+    """A driver that reports a Cloudflare challenge until it is cleared."""
+
+    def __init__(self, title="Just a moment...", elements=True):
+        super().__init__()
+        self.title = title
+        self._elements = elements
+        self.reconnect_calls = 0
+        self.captcha_clicks = 0
+        self.current_url = "https://school.teachable.com/courses/enrolled/1"
+
+    def find_elements(self, by, selector):
+        return ["el"] if self._elements else []
+
+    def uc_open_with_reconnect(self, url, seconds):
+        self.reconnect_calls += 1
+
+    def uc_gui_click_captcha(self):
+        self.captcha_clicks += 1
+        self.title = "Course"
+        self._elements = False
+
+
+def make_browser_with(driver, **settings_kwargs):
+    from teachable_dl.browser import Browser
+    from teachable_dl.config import Settings
+
+    browser = Browser.__new__(Browser)
+    browser.settings = Settings(timeout=1, **settings_kwargs)
+    browser.driver = driver
+    browser.restarts = 0
+    browser.on_restart = None
+    return browser
+
+
+def test_a_turnstile_challenge_is_detected():
+    """Matching only #challenge-stage missed Turnstile, so the run looped."""
+    browser = make_browser_with(ChallengeDriver())
+    assert browser.on_challenge_page()
+
+
+def test_a_challenge_is_detected_by_page_title_alone():
+    browser = make_browser_with(ChallengeDriver(title="Just a moment...", elements=False))
+    assert browser.on_challenge_page()
+
+
+def test_an_ordinary_page_is_not_a_challenge():
+    browser = make_browser_with(ChallengeDriver(title="Course", elements=False))
+    assert not browser.on_challenge_page()
+
+
+def test_the_challenge_is_cleared_via_the_uc_handler():
+    driver = ChallengeDriver()
+    browser = make_browser_with(driver)
+    assert browser.bypass_cloudflare() is True
+    assert driver.captcha_clicks == 1
+
+
+def test_navigation_detaches_the_driver_in_stealth_mode():
+    """Cloudflare notices the attached chromedriver; UC mode drops it."""
+    driver = ChallengeDriver(title="Course", elements=False)
+    browser = make_browser_with(driver)
+    browser._navigate("https://school.teachable.com/x")
+    assert driver.reconnect_calls == 1
+
+
+def test_navigation_is_plain_when_stealth_is_off():
+    class Plain(ChallengeDriver):
+        def __init__(self):
+            super().__init__(title="Course", elements=False)
+            self.plain_gets = 0
+
+        def get(self, url):
+            self.plain_gets += 1
+
+    driver = Plain()
+    browser = make_browser_with(driver, stealth=False)
+    browser._navigate("https://school.teachable.com/x")
+    assert driver.plain_gets == 1 and driver.reconnect_calls == 0
+
+
+def test_a_headless_run_cannot_ask_a_human_to_click():
+    """No point prompting for a click nobody can see."""
+    driver = ChallengeDriver()
+    driver.uc_gui_click_captcha = lambda: (_ for _ in ()).throw(Exception("no gui"))
+    browser = make_browser_with(driver, headless=True, stealth=True)
+    assert browser.bypass_cloudflare(attempts=1) is False

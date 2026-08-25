@@ -62,6 +62,13 @@ def build_parser():
                              "course directory and exit. Does not open a browser.")
 
     browser = parser.add_argument_group("browser")
+    browser.add_argument("--no-stealth", action="store_true",
+                         help="Use a plain Chrome driver instead of SeleniumBase's "
+                              "undetected (UC) mode. UC mode is what gets past a "
+                              "Cloudflare challenge, but it runs the x86_64 "
+                              "chromedriver on macOS, so Apple Silicon needs "
+                              "Rosetta 2. If your school has no Cloudflare "
+                              "interstitial, this avoids that requirement.")
     browser.add_argument("--headless", action="store_true",
                          help="Run the browser headless so it stops stealing focus")
     browser.add_argument("--user-agent", default=DEFAULT_USER_AGENT,
@@ -163,6 +170,7 @@ def settings_from_args(args, email, password, totp_secret):
         man_login_url=args.man_login_url,
         output_dir=os.path.abspath(args.output_dir),
         ascii_filenames=args.ascii_filenames,
+        stealth=not args.no_stealth,
         headless=args.headless,
         user_agent=args.user_agent,
         timeout=args.timeout,

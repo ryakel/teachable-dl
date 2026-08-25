@@ -27,6 +27,11 @@ class Settings:
     ascii_filenames: bool = False
 
     # Browser
+    #: SeleniumBase's undetected ("UC") mode evades bot detection and is what
+    #: gets past a Cloudflare interstitial. It also runs the x86_64 chromedriver
+    #: on macOS, which is why Apple Silicon needs Rosetta 2. Turn it off to use
+    #: a plain driver where the school has no such challenge.
+    stealth: bool = True
     headless: bool = False
     user_agent: str = DEFAULT_USER_AGENT
     timeout: int = 10

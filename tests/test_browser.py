@@ -171,3 +171,66 @@ def test_rosetta_is_distinguished_from_a_missing_browser(monkeypatch):
 
     with pytest.raises(BrowserNotFoundError):
         browser.start()
+
+
+# ------------------------------------------------------------ stealth toggle
+
+def test_undetected_mode_is_on_by_default(monkeypatch):
+    """UC mode is what gets past a Cloudflare interstitial, so it stays default."""
+    from teachable_dl.browser import Browser
+    from teachable_dl.config import Settings
+
+    seen = {}
+
+    class FakeDriver:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def set_page_load_timeout(self, value):
+            pass
+
+    monkeypatch.setattr("teachable_dl.browser.Driver", FakeDriver)
+    browser = Browser.__new__(Browser)
+    browser.settings = Settings()
+    browser.start()
+    assert seen["uc"] is True
+
+
+def test_no_stealth_uses_a_plain_driver(monkeypatch):
+    """--no-stealth avoids the x86_64 chromedriver, and so the Rosetta 2
+    requirement on Apple Silicon."""
+    from teachable_dl.browser import Browser
+    from teachable_dl.config import Settings
+
+    seen = {}
+
+    class FakeDriver:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def set_page_load_timeout(self, value):
+            pass
+
+    monkeypatch.setattr("teachable_dl.browser.Driver", FakeDriver)
+    browser = Browser.__new__(Browser)
+    browser.settings = Settings(stealth=False)
+    browser.start()
+    assert seen["uc"] is False
+
+
+def test_the_rosetta_error_offers_both_ways_out(monkeypatch):
+    from teachable_dl.browser import Browser, MissingRosettaError
+    from teachable_dl.config import Settings
+
+    monkeypatch.setattr(
+        "teachable_dl.browser.Driver",
+        lambda **k: (_ for _ in ()).throw(Exception("[Errno 86] Bad CPU type in executable")),
+    )
+    browser = Browser.__new__(Browser)
+    browser.settings = Settings()
+
+    with pytest.raises(MissingRosettaError) as caught:
+        browser.start()
+    message = str(caught.value)
+    assert "softwareupdate --install-rosetta" in message
+    assert "--no-stealth" in message

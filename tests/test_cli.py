@@ -174,3 +174,9 @@ def test_rewrite_only_works_without_a_browser(tmp_path):
 
 def test_rewrite_only_reports_a_missing_manifest(tmp_path):
     assert run_rewrite_only(str(tmp_path)) == 1
+
+
+def test_stealth_defaults_on_and_can_be_disabled():
+    """--no-stealth trades Cloudflare handling for not needing Rosetta 2."""
+    assert settings_for().stealth is True
+    assert settings_for("--no-stealth").stealth is False

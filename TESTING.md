@@ -87,6 +87,10 @@ softwareupdate --install-rosetta --agree-to-license
 
 Without it the first run fails with `[Errno 86] Bad CPU type in executable`.
 
+If you would rather not install Rosetta, add `--no-stealth` to use a plain
+driver instead. That only costs you the Cloudflare bypass, which many schools
+never trigger.
+
 ### Stage 1 — login and curriculum, downloading nothing
 
 ```sh

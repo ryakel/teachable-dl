@@ -144,8 +144,12 @@ class Browser:
     # ------------------------------------------------------------------ setup
 
     def start(self):
-        logger.info("Starting browser (headless=%s)", self.settings.headless)
-        kwargs = {"uc": True, "agent": self.settings.user_agent}
+        logger.info(
+            "Starting browser (headless=%s, stealth=%s)",
+            self.settings.headless,
+            self.settings.stealth,
+        )
+        kwargs = {"uc": bool(self.settings.stealth), "agent": self.settings.user_agent}
         if self.settings.headless:
             # ``headless2`` keeps a real renderer, which undetected-chromedriver
             # and Cloudflare's challenge both need. Plain ``headless`` fails the
@@ -162,11 +166,15 @@ class Browser:
             lowered = str(exc).lower()
             if any(marker in lowered for marker in _ROSETTA_MARKERS):
                 raise MissingRosettaError(
-                    "This Mac needs Rosetta 2. SeleniumBase's undetected mode "
-                    "runs the x86_64 chromedriver even on Apple Silicon, so the "
-                    "translation layer has to be installed:\n"
+                    "Undetected mode needs Rosetta 2 on this Mac: SeleniumBase "
+                    "runs the x86_64 chromedriver even on Apple Silicon.\n"
+                    "  Either install the translation layer (one-time):\n"
                     "    softwareupdate --install-rosetta --agree-to-license\n"
-                    "  It is a one-time install; no other setup changes.\n"
+                    "  or skip undetected mode entirely and use a plain driver:\n"
+                    "    --no-stealth\n"
+                    "  Undetected mode is only needed to get past a Cloudflare "
+                    "challenge. Many schools have none, so try --no-stealth "
+                    "first if you would rather not install Rosetta.\n"
                     f"  (original error: {exc})"
                 ) from exc
             if any(marker in lowered for marker in _MISSING_BROWSER_MARKERS):

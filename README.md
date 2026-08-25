@@ -135,7 +135,7 @@ brew install ffmpeg
 - Chrome: download from [Google Chrome's official website](https://www.google.com/chrome/),
   or `brew install --cask google-chrome`.
 
-- Rosetta 2 — **required on Apple Silicon**
+- Rosetta 2 — **needed on Apple Silicon for undetected mode**
 
 ```sh
 softwareupdate --install-rosetta --agree-to-license
@@ -143,10 +143,15 @@ softwareupdate --install-rosetta --agree-to-license
 
 > This one catches everyone on an M-series Mac. SeleniumBase's undetected mode
 > runs the **x86_64** chromedriver even on Apple Silicon, so without Apple's
-> translation layer the driver cannot execute at all and the first run dies with
+> translation layer the driver cannot execute and the first run dies with
 > `[Errno 86] Bad CPU type in executable`. It is a one-time install, and it does
 > not mean anything else here runs under emulation — a native arm64 Python and
 > an Apple Silicon Chrome are still the right choices.
+>
+> **You can skip it.** Undetected mode exists to get past a Cloudflare
+> interstitial, and many schools have none. `--no-stealth` uses a plain Chrome
+> driver with no Rosetta requirement. If your school does challenge you, the
+> download will stall at the challenge — install Rosetta and drop the flag.
 
 Both Apple Silicon and Intel Macs are supported.
 

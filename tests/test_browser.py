@@ -135,3 +135,39 @@ def test_install_hint_matches_the_platform(monkeypatch, platform, expected):
 
     monkeypatch.setattr(browser_module.sys, "platform", platform)
     assert expected in browser_module._install_hint()
+
+
+def test_an_apple_silicon_mac_without_rosetta_is_told_what_to_install(monkeypatch):
+    """SeleniumBase's UC Mode runs the x86_64 chromedriver even on Apple
+    Silicon, so a stock arm64 Mac fails with "Bad CPU type in executable"."""
+    from teachable_dl.browser import Browser, MissingRosettaError
+    from teachable_dl.config import Settings
+
+    def explode(**kwargs):
+        raise Exception(
+            "[Errno 86] Bad CPU type in executable: '.../seleniumbase/drivers/uc_driver'"
+        )
+
+    monkeypatch.setattr("teachable_dl.browser.Driver", explode)
+    browser = Browser.__new__(Browser)
+    browser.settings = Settings()
+
+    with pytest.raises(MissingRosettaError) as caught:
+        browser.start()
+    assert "softwareupdate --install-rosetta" in str(caught.value)
+
+
+def test_rosetta_is_distinguished_from_a_missing_browser(monkeypatch):
+    """The two failures need different fixes, so they must not be conflated."""
+    from teachable_dl.browser import Browser, BrowserNotFoundError
+    from teachable_dl.config import Settings
+
+    monkeypatch.setattr(
+        "teachable_dl.browser.Driver",
+        lambda **k: (_ for _ in ()).throw(Exception("Chrome not found! Install it first!")),
+    )
+    browser = Browser.__new__(Browser)
+    browser.settings = Settings()
+
+    with pytest.raises(BrowserNotFoundError):
+        browser.start()

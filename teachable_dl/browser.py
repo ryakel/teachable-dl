@@ -54,6 +54,15 @@ class BrowserNotFoundError(RuntimeError):
     """Google Chrome is not installed, or could not be located."""
 
 
+class MissingRosettaError(RuntimeError):
+    """Apple Silicon Mac without Rosetta 2, which UC Mode needs."""
+
+
+#: SeleniumBase's undetected mode uses the x86_64 chromedriver on macOS even on
+#: Apple Silicon, so Rosetta 2 has to be present to execute it.
+_ROSETTA_MARKERS = ("rosetta", "bad cpu type")
+
+
 #: Substrings in a startup failure that mean "there is no browser to drive".
 _MISSING_BROWSER_MARKERS = (
     "chrome not found",
@@ -150,7 +159,17 @@ class Browser:
             # SeleniumBase happily downloads a matching chromedriver and only
             # then reports "Chrome not found!", which reads like a driver
             # problem when it is a missing browser. Say what to actually do.
-            if any(marker in str(exc).lower() for marker in _MISSING_BROWSER_MARKERS):
+            lowered = str(exc).lower()
+            if any(marker in lowered for marker in _ROSETTA_MARKERS):
+                raise MissingRosettaError(
+                    "This Mac needs Rosetta 2. SeleniumBase's undetected mode "
+                    "runs the x86_64 chromedriver even on Apple Silicon, so the "
+                    "translation layer has to be installed:\n"
+                    "    softwareupdate --install-rosetta --agree-to-license\n"
+                    "  It is a one-time install; no other setup changes.\n"
+                    f"  (original error: {exc})"
+                ) from exc
+            if any(marker in lowered for marker in _MISSING_BROWSER_MARKERS):
                 raise BrowserNotFoundError(
                     f"Google Chrome could not be found, so there is no browser "
                     f"to drive.\n  {_install_hint()}\n"

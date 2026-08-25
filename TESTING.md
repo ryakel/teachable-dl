@@ -78,6 +78,15 @@ rebuild the venv with a newer interpreter (`brew install python@3.12`, then
 `ffmpeg` matters: without it the downloader falls back to lower-quality
 single-file streams. If it is missing, install it before judging video quality.
 
+On an Apple Silicon Mac you also need Rosetta 2 — SeleniumBase's undetected
+mode runs the x86_64 chromedriver regardless of your architecture:
+
+```sh
+softwareupdate --install-rosetta --agree-to-license
+```
+
+Without it the first run fails with `[Errno 86] Bad CPU type in executable`.
+
 ### Stage 1 — login and curriculum, downloading nothing
 
 ```sh

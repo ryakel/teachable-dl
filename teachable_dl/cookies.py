@@ -74,25 +74,60 @@ def load_from_browser(spec):
     try:
         return extract_cookies_from_browser(name, profile.strip() or None)
     except Exception as exc:
-        hint = "\n".join(
-            [
-                f"Could not read cookies from {name}: {exc}",
-                "",
-                "  Most likely that browser has no profile on this machine yet -- a",
-                "  browser installed just for this tool has never stored a login.",
-                "  Use the browser you actually signed in with.",
-                f"  Detected on this machine: {describe_available_browsers()}",
-                "",
-                "  A non-default profile is given as browser:profile, for example",
-                "  --cookies-from-browser 'chrome:Profile 1'.",
-                "",
-                "  On macOS the cookie store is encrypted, so reading it may prompt",
-                "  for Keychain access and needs the browser closed. Exporting a",
-                "  cookies.txt from a browser extension and passing --cookies",
-                "  avoids both.",
-            ]
-        )
-        raise CookieError(hint) from exc
+        raise CookieError(_explain_browser_failure(name, exc)) from exc
+
+
+_EXPORT_ADVICE = [
+    "  Alternatively, export a cookies.txt with a browser extension (search",
+    "  your extension store for \"Get cookies.txt\") while signed in to the",
+    "  school, and pass --cookies path/to/cookies.txt. That needs no special",
+    "  permission and works with any browser.",
+]
+
+
+def _explain_browser_failure(name, exc):
+    """Say what actually went wrong, rather than guessing one cause for all."""
+    message = str(exc)
+    lowered = message.lower()
+    lines = [f"Could not read cookies from {name}: {message}", ""]
+
+    denied = isinstance(exc, PermissionError) or "not permitted" in lowered or (
+        "permission denied" in lowered
+    )
+    missing = "could not find" in lowered or "no such file" in lowered
+
+    if denied:
+        # The browser is there; macOS is refusing us the file.
+        lines += [
+            "  That is a macOS privacy restriction, not a missing browser: the",
+            "  cookie store exists but your terminal is not allowed to read it.",
+            "",
+            "  Open System Settings > Privacy & Security > Full Disk Access,",
+            "  add the terminal app you are running this from, then restart the",
+            "  terminal completely and try again.",
+            "",
+        ]
+    elif missing:
+        lines += [
+            "  That browser has no cookie store on this machine, which usually",
+            "  means it has never been signed in to -- a browser installed just",
+            "  to run this tool has stored nothing. Use the one you actually",
+            "  logged in with.",
+            f"  Browsers with a cookie store here: {describe_available_browsers()}",
+            "",
+            "  A non-default profile is given as browser:profile, for example",
+            "  --cookies-from-browser 'chrome:Profile 1'.",
+            "",
+        ]
+    else:
+        lines += [
+            f"  Browsers with a cookie store here: {describe_available_browsers()}",
+            "  Reading an encrypted store may prompt for Keychain access and",
+            "  usually needs the browser closed.",
+            "",
+        ]
+
+    return "\n".join(lines + _EXPORT_ADVICE)
 
 
 #: Where each browser keeps its profiles on this platform, for a better error.
@@ -129,10 +164,30 @@ def _browser_data_dirs():
     }
 
 
+def _has_cookie_store(name, root):
+    """Is there an actual cookie database under ``root``?
+
+    A directory alone is not enough: a freshly installed browser has one and no
+    cookies, which is precisely the case that produced a misleading error.
+    """
+    if not os.path.isdir(root):
+        return False
+    if name == "safari":
+        return True  # the container itself is the store
+    candidates = ("Cookies", "cookies.sqlite", "Cookies.binarycookies")
+    for current, _dirs, files in os.walk(root):
+        if any(candidate in files for candidate in candidates):
+            return True
+        # Profiles live one or two levels down; do not walk the whole tree.
+        if current.count(os.sep) - root.count(os.sep) >= 2:
+            _dirs[:] = []
+    return False
+
+
 def available_browsers():
-    """Browsers that actually have a profile directory on this machine."""
+    """Browsers that actually have a cookie store on this machine."""
     return sorted(
-        name for name, path in _browser_data_dirs().items() if os.path.isdir(path)
+        name for name, path in _browser_data_dirs().items() if _has_cookie_store(name, path)
     )
 
 

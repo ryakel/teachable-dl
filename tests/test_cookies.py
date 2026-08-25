@@ -107,6 +107,55 @@ def test_an_unknown_browser_lists_the_supported_ones():
     assert "chrome" in message and "firefox" in message
 
 
+def test_a_permission_error_is_not_blamed_on_a_missing_browser():
+    """macOS refuses Safari's cookie store without Full Disk Access. Calling
+    that "no profile" sends people to fix the wrong thing."""
+    from teachable_dl.cookies import _explain_browser_failure
+
+    message = _explain_browser_failure(
+        "safari",
+        PermissionError(1, "Operation not permitted", "/Users/x/.../Cookies.binarycookies"),
+    )
+    assert "Full Disk Access" in message
+    assert "has never been signed in" not in message
+
+
+def test_a_missing_store_is_not_blamed_on_permissions():
+    from teachable_dl.cookies import _explain_browser_failure
+
+    message = _explain_browser_failure(
+        "chrome", Exception('could not find chrome cookies database in "/x"')
+    )
+    assert "never been signed in" in message
+    assert "Full Disk Access" not in message
+
+
+def test_every_failure_offers_the_permission_free_route():
+    from teachable_dl.cookies import _explain_browser_failure
+
+    for exc in (
+        PermissionError(1, "Operation not permitted", "/x"),
+        Exception("could not find chrome cookies database"),
+        Exception("something else entirely"),
+    ):
+        assert "--cookies" in _explain_browser_failure("chrome", exc)
+
+
+def test_a_directory_without_a_cookie_store_is_not_reported_as_available(tmp_path,
+                                                                        monkeypatch):
+    """A browser installed just for this tool has a directory and no cookies."""
+    from teachable_dl import cookies as module
+
+    empty = tmp_path / "Chrome"
+    empty.mkdir()
+    monkeypatch.setattr(module, "_browser_data_dirs", lambda: {"chrome": str(empty)})
+    assert module.available_browsers() == []
+
+    (empty / "Default").mkdir()
+    (empty / "Default" / "Cookies").write_bytes(b"")
+    assert module.available_browsers() == ["chrome"]
+
+
 def test_the_browser_error_names_what_is_actually_installed():
     """A browser installed just for this tool has no profile, which is the
     likeliest cause and the least obvious from yt-dlp's own message."""
@@ -118,7 +167,7 @@ def test_the_browser_error_names_what_is_actually_installed():
 
     assert "\\n" not in message, "escaped newline leaked into the message"
     assert "\n" in message, "the guidance should be on its own lines"
-    assert "Detected on this machine" in message
+    assert "Browsers with a cookie store here" in message
     assert describe_available_browsers() in message
     assert "browser:profile" in message
 
@@ -131,3 +180,12 @@ def test_available_browsers_only_reports_real_profile_directories():
 
     for name in available_browsers():
         assert os.path.isdir(_browser_data_dirs()[name])
+
+
+def test_setting_names_are_not_split_across_lines():
+    """A wrapped 'Full Disk Access' is invisible to anyone searching for it."""
+    from teachable_dl.cookies import _explain_browser_failure
+
+    message = _explain_browser_failure("safari", PermissionError(1, "Operation not permitted", "/x"))
+    for phrase in ("Full Disk Access", "Privacy & Security"):
+        assert phrase in message, f"{phrase!r} should sit on one line"

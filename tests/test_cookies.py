@@ -189,3 +189,45 @@ def test_setting_names_are_not_split_across_lines():
     message = _explain_browser_failure("safari", PermissionError(1, "Operation not permitted", "/x"))
     for phrase in ("Full Disk Access", "Privacy & Security"):
         assert phrase in message, f"{phrase!r} should sit on one line"
+
+
+# ------------------------------------------------- which hosts get seeded
+
+def test_the_sso_host_is_seeded_alongside_the_school():
+    """Seeding only the school's host left the browser anonymous: a school using
+    'Log in with Teachable' keeps its session cookie on sso.teachable.com."""
+    from teachable_dl.cookies import hosts_to_seed
+
+    jar = [FakeCookie("a", ".flightinsight.teachable.com"),
+           FakeCookie("b", "sso.teachable.com"),
+           FakeCookie("c", ".teachable.com")]
+    hosts = hosts_to_seed(jar, "https://flightinsight.teachable.com/courses/enrolled/1")
+    assert hosts[0] == "flightinsight.teachable.com"      # school first
+    assert "sso.teachable.com" in hosts
+
+
+def test_a_custom_domain_school_still_gets_the_teachable_sso_host():
+    from teachable_dl.cookies import hosts_to_seed
+
+    jar = [FakeCookie("a", "courses.example.com"), FakeCookie("b", "sso.teachable.com")]
+    hosts = hosts_to_seed(jar, "https://courses.example.com/courses/enrolled/1")
+    assert hosts == ["courses.example.com", "sso.teachable.com"]
+
+
+def test_unrelated_sites_in_the_jar_are_never_visited():
+    """An exported jar covers every site you use; only the school's is relevant."""
+    from teachable_dl.cookies import hosts_to_seed
+
+    jar = [FakeCookie("a", "flightinsight.teachable.com"),
+           FakeCookie("b", ".google.com"),
+           FakeCookie("c", "bank.example.com")]
+    hosts = hosts_to_seed(jar, "https://flightinsight.teachable.com/courses/enrolled/1")
+    assert hosts == ["flightinsight.teachable.com"]
+
+
+def test_registrable_domain_grouping():
+    from teachable_dl.cookies import registrable_domain
+
+    assert registrable_domain("flightinsight.teachable.com") == "teachable.com"
+    assert registrable_domain("teachable.com") == "teachable.com"
+    assert registrable_domain("localhost") == "localhost"

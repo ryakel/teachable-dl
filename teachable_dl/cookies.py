@@ -221,6 +221,42 @@ def to_selenium_cookie(cookie):
     return payload
 
 
+#: Teachable's single sign-on lives here whatever the school's own domain is,
+#: so a school using it holds part of the session off its own host entirely.
+TEACHABLE_HOSTS = ("teachable.com", "sso.teachable.com")
+
+
+def registrable_domain(host):
+    """``flightinsight.teachable.com`` -> ``teachable.com``. Good enough here."""
+    parts = (host or "").lower().strip(".").split(".")
+    return ".".join(parts[-2:]) if len(parts) >= 2 else (host or "").lower()
+
+
+def hosts_to_seed(jar, course_url):
+    """Every host whose cookies matter for this course, school first.
+
+    Seeding only the school's own host is not enough: a school that signs people
+    in through "Log in with Teachable" keeps the session cookie on
+    sso.teachable.com, so importing just the school's cookies lands the browser
+    back on the sign-in page looking exactly like an anonymous visitor.
+    """
+    host = (urlparse(course_url).hostname or "").lower()
+    base = registrable_domain(host)
+
+    hosts = [host] if host else []
+    for domain in sorted({(c.domain or "").lstrip(".").lower() for c in jar if c.domain}):
+        if not domain or domain in hosts:
+            continue
+        related = (
+            registrable_domain(domain) == base
+            or domain in TEACHABLE_HOSTS
+            or domain.endswith(".teachable.com")
+        )
+        if related:
+            hosts.append(domain)
+    return hosts
+
+
 def cookies_for_host(jar, host):
     """Every cookie in ``jar`` that applies to ``host``, oldest scope first."""
     return [c for c in jar if cookie_matches_host(c.domain, host)]
@@ -229,36 +265,43 @@ def cookies_for_host(jar, host):
 def apply_to_browser(browser, jar, course_url):
     """Install the cookies into the live browser session.
 
-    A cookie can only be set while the browser is on a matching domain, so the
-    school's origin is loaded first and the course page only afterwards.
+    A cookie can only be set while the browser is on a matching domain, so each
+    relevant host is visited in turn before the course page is loaded.
     """
     parsed = urlparse(course_url)
-    host = parsed.hostname
-    if not host:
+    if not parsed.hostname:
         raise CookieError(f"Could not read a host from {course_url!r}")
 
-    applicable = cookies_for_host(jar, host)
-    if not applicable:
+    scheme = parsed.scheme or "https"
+    hosts = hosts_to_seed(jar, course_url)
+    total = 0
+
+    for host in hosts:
+        applicable = cookies_for_host(jar, host)
+        if not applicable:
+            continue
+
+        browser.get(f"{scheme}://{host}/")
+        added = 0
+        for cookie in applicable:
+            try:
+                browser.driver.add_cookie(to_selenium_cookie(cookie))
+                added += 1
+            except Exception as exc:
+                logger.debug("Could not set cookie %s for %s: %s", cookie.name, host, exc)
+
+        if added:
+            logger.info("Seeded %s cookie(s) for %s", added, host)
+        total += added
+
+    if not total:
         raise CookieError(
-            f"The cookies contain nothing for {host}. Make sure you exported "
-            "them while signed in to that school, not just to teachable.com."
+            f"The cookies contain nothing usable for {parsed.hostname}.\n"
+            "  Export them while signed in to that school. If the school signs\n"
+            "  you in through Teachable, the export needs to cover\n"
+            "  sso.teachable.com as well as the school's own address."
         )
 
-    origin = f"{parsed.scheme or 'https'}://{host}/"
-    logger.info("Seeding %s cookie(s) for %s", len(applicable), host)
-    browser.get(origin)
-
-    added = 0
-    for cookie in applicable:
-        try:
-            browser.driver.add_cookie(to_selenium_cookie(cookie))
-            added += 1
-        except Exception as exc:
-            logger.debug("Could not set cookie %s: %s", cookie.name, exc)
-
-    if not added:
-        raise CookieError("The browser rejected every cookie")
-
-    logger.info("Installed %s cookie(s); reloading as the signed-in user", added)
+    logger.info("Installed %s cookie(s) across %s host(s)", total, len(hosts))
     browser.get(course_url)
-    return added
+    return total

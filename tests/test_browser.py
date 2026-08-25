@@ -84,3 +84,54 @@ def test_ordinary_errors_are_not_treated_as_a_dead_session():
 
 def test_session_lost_error_is_always_a_dead_session():
     assert is_dead_session_error(SessionLostError("gone"))
+
+
+# ------------------------------------------------- missing browser guidance
+
+def test_a_missing_chrome_is_reported_as_a_setup_problem(monkeypatch):
+    """SeleniumBase downloads a driver and only then says "Chrome not found!",
+    which reads like a driver problem when the browser is simply not installed."""
+    from teachable_dl.browser import Browser, BrowserNotFoundError
+    from teachable_dl.config import Settings
+
+    def explode(**kwargs):
+        raise Exception("Chrome not found! Install it first!")
+
+    monkeypatch.setattr("teachable_dl.browser.Driver", explode)
+
+    browser = Browser.__new__(Browser)
+    browser.settings = Settings()
+    with pytest.raises(BrowserNotFoundError) as caught:
+        browser.start()
+
+    message = str(caught.value)
+    assert "google.com/chrome" in message
+    assert "Chrome not found" in message   # keeps the original cause
+
+
+def test_an_unrelated_startup_failure_is_not_disguised(monkeypatch):
+    from teachable_dl.browser import Browser, BrowserNotFoundError
+    from teachable_dl.config import Settings
+
+    def explode(**kwargs):
+        raise ValueError("something else entirely")
+
+    monkeypatch.setattr("teachable_dl.browser.Driver", explode)
+    browser = Browser.__new__(Browser)
+    browser.settings = Settings()
+
+    with pytest.raises(ValueError):
+        browser.start()
+
+
+@pytest.mark.parametrize(
+    "platform,expected",
+    [("darwin", "brew install --cask google-chrome"),
+     ("win32", "winget install Google.Chrome"),
+     ("linux", "google-chrome-stable")],
+)
+def test_install_hint_matches_the_platform(monkeypatch, platform, expected):
+    from teachable_dl import browser as browser_module
+
+    monkeypatch.setattr(browser_module.sys, "platform", platform)
+    assert expected in browser_module._install_hint()

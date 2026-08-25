@@ -16,6 +16,7 @@ rest of the run.
 
 import base64
 import logging
+import sys
 import time
 
 from selenium.common.exceptions import (
@@ -47,6 +48,43 @@ _DEAD_SESSION_MARKERS = (
 
 class SessionLostError(RuntimeError):
     """Raised when the underlying browser session can no longer be used."""
+
+
+class BrowserNotFoundError(RuntimeError):
+    """Google Chrome is not installed, or could not be located."""
+
+
+#: Substrings in a startup failure that mean "there is no browser to drive".
+_MISSING_BROWSER_MARKERS = (
+    "chrome not found",
+    "cannot find chrome binary",
+    "no chrome binary",
+    "unable to locate",
+    "browser not found",
+)
+
+
+def _install_hint():
+    """Platform-appropriate instructions for installing Google Chrome."""
+    if sys.platform == "darwin":
+        return (
+            "Install Google Chrome:\n"
+            "    brew install --cask google-chrome\n"
+            "  or download it from https://www.google.com/chrome/\n"
+            "  On Apple Silicon, take the Apple Silicon build so the browser and "
+            "its driver match."
+        )
+    if sys.platform.startswith("win"):
+        return (
+            "Install Google Chrome from https://www.google.com/chrome/ , or:\n"
+            "    winget install Google.Chrome"
+        )
+    return (
+        "Install Google Chrome, for example:\n"
+        "    sudo apt install google-chrome-stable\n"
+        "  or download it from https://www.google.com/chrome/\n"
+        "  Chromium alone is not enough for undetected mode."
+    )
 
 
 def render_pdf(driver):
@@ -106,7 +144,19 @@ class Browser:
             kwargs["headless2"] = True
         else:
             kwargs["headed"] = True
-        self.driver = Driver(**kwargs)
+        try:
+            self.driver = Driver(**kwargs)
+        except Exception as exc:
+            # SeleniumBase happily downloads a matching chromedriver and only
+            # then reports "Chrome not found!", which reads like a driver
+            # problem when it is a missing browser. Say what to actually do.
+            if any(marker in str(exc).lower() for marker in _MISSING_BROWSER_MARKERS):
+                raise BrowserNotFoundError(
+                    f"Google Chrome could not be found, so there is no browser "
+                    f"to drive.\n  {_install_hint()}\n"
+                    f"  (original error: {exc})"
+                ) from exc
+            raise
         self.driver.set_page_load_timeout(max(self.settings.timeout * 6, 60))
         return self.driver
 

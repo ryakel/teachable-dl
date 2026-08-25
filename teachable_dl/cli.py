@@ -231,6 +231,7 @@ def main(argv=None):
     settings = settings_from_args(args, email, password, totp_secret)
 
     # Imported here so that --help and --rewrite-only work without a browser stack.
+    from .browser import BrowserNotFoundError
     from .downloader import CourseDownloader
 
     downloader = None
@@ -240,6 +241,10 @@ def main(argv=None):
     except KeyboardInterrupt:
         logger.error("Interrupted")
         return 130
+    except BrowserNotFoundError as exc:
+        # A missing browser is a setup problem, not a crash: no stack trace.
+        logger.error("%s", exc)
+        return 1
     except Exception as exc:
         logger.error("Fatal error: %s", exc, exc_info=settings.verbose)
         return 1

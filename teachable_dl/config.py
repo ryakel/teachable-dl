@@ -21,6 +21,8 @@ class Settings:
     totp_secret: str | None = None
     login_url: str | None = None
     man_login_url: str | None = None
+    #: How long to wait for a person to finish signing in by hand.
+    manual_login_timeout: float = 600.0
 
     # Output
     output_dir: str = field(default_factory=lambda: os.path.join(os.getcwd(), "courses"))

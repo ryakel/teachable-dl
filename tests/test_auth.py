@@ -173,3 +173,41 @@ def test_a_form_with_no_button_is_submitted_with_the_enter_key():
     auth, _ = _authenticator({(By.CSS_SELECTOR, "input[type='password']"): [field]})
     auth._submit()
     assert field.value == Keys.RETURN
+
+
+# ------------------------------------------------------ login verification
+
+def test_a_page_still_offering_sign_in_is_not_a_session():
+    """The run reported "Logged in" while anonymous, then scraped only the free
+    preview lectures and called that success."""
+    from teachable_dl.auth import LoginError
+
+    auth, _ = _authenticator({(By.CSS_SELECTOR, "a[href*='/sign_in']"): [FakeElement()]})
+    with pytest.raises(LoginError) as caught:
+        auth.verify_logged_in("https://school.teachable.com/courses/enrolled/1")
+
+    message = str(caught.value)
+    assert "not logged in" in message
+    assert "--man_login_url" in message          # names the way out
+    assert "free preview" in message             # explains the symptom
+
+
+def test_a_sign_out_link_confirms_the_session():
+    auth, _ = _authenticator({(By.CSS_SELECTOR, "a[href*='/sign_out']"): [FakeElement()]})
+    assert auth.verify_logged_in("https://school.teachable.com/courses/enrolled/1") is True
+
+
+def test_an_ambiguous_page_warns_rather_than_guessing():
+    """Neither marker present: continue, but say so, since a false failure here
+    would be as unhelpful as a false success."""
+    auth, _ = _authenticator({})
+    assert auth.verify_logged_in("https://school.teachable.com/courses/enrolled/1") is False
+
+
+def test_the_sso_advice_names_the_login_styles_that_break_the_form():
+    from teachable_dl.auth import LoginError
+
+    auth, _ = _authenticator({(By.CSS_SELECTOR, "a[href*='/sign_up']"): [FakeElement()]})
+    with pytest.raises(LoginError) as caught:
+        auth.verify_logged_in("https://school.teachable.com/courses/enrolled/1")
+    assert "single sign-on" in str(caught.value).lower()

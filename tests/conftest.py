@@ -63,6 +63,39 @@ class FakeDriver:
     def get_cookies(self):
         return list(self._cookies)
 
+    # -- enough of a real driver that Browser.get() works against the fake,
+    #    rather than deciding the session is dead and restarting Chrome.
+    @property
+    def window_handles(self):
+        return ["window-1"]
+
+    @property
+    def current_window_handle(self):
+        return "window-1"
+
+    @property
+    def switch_to(self):
+        class _SwitchTo:
+            def window(self, name):
+                pass
+
+            def frame(self, element):
+                pass
+
+            def default_content(self):
+                pass
+
+        return _SwitchTo()
+
+    def get(self, url):
+        self.current_url = url
+
+    def set_page_load_timeout(self, seconds):
+        pass
+
+    def execute_script(self, script, *args):
+        return None
+
 
 def make_browser(mapping=None, cookies=None, **settings_kwargs):
     """A Browser wired to a FakeDriver, bypassing real driver startup."""

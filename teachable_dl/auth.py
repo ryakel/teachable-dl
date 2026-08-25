@@ -78,6 +78,22 @@ LOGIN_LINK_SELECTORS = [
     (By.CSS_SELECTOR, "a[href*='/login']"),
 ]
 
+#: A live session shows a way out of it. Any of these means we are logged in.
+LOGGED_IN_SELECTORS = [
+    (By.CSS_SELECTOR, "a[href*='/sign_out']"),
+    (By.CSS_SELECTOR, "a[href*='/logout']"),
+    (By.CSS_SELECTOR, "form[action*='/sign_out']"),
+    (By.CSS_SELECTOR, "[data-testid*='user-menu']"),
+    (By.CSS_SELECTOR, ".user-avatar, .current-user, #current-user"),
+]
+
+#: Conversely, an offer to sign in or enrol means we are not.
+LOGGED_OUT_SELECTORS = [
+    (By.CSS_SELECTOR, "a[href*='/sign_in']"),
+    (By.CSS_SELECTOR, "a[href*='/sign_up']"),
+    (By.CSS_SELECTOR, "a[href*='/enroll']"),
+]
+
 BAD_CREDENTIALS_MARKERS = (
     "your email or password is incorrect",
     "invalid email or password",
@@ -127,31 +143,105 @@ class Authenticator:
     # ------------------------------------------------------------------ flow
 
     def authenticate(self, course_url):
-        """Log in ahead of downloading ``course_url``."""
+        """Log in ahead of downloading ``course_url``, and confirm it worked."""
         settings = self.settings
 
         if settings.man_login_url:
-            return self._manual_login(course_url, settings.man_login_url)
-
-        if settings.login_url:
-            self.browser.get(settings.login_url)
+            self._manual_login(course_url, settings.man_login_url)
         else:
-            self.find_login(course_url)
+            if settings.login_url:
+                self.browser.get(settings.login_url)
+            else:
+                self.find_login(course_url)
 
+            self.browser.handle_cloudflare_if_present()
+            self.login(settings.email, settings.password)
+
+        # Submitting a form and seeing no error is not proof of a session.
+        # Without this check the run continued unauthenticated, scraped only the
+        # free preview lectures, and reported success the whole way.
+        self.verify_logged_in(course_url)
+
+    def verify_logged_in(self, course_url):
+        """Confirm a real session exists, rather than trusting the form submit.
+
+        A school's page can accept a submission, or simply have no form where we
+        looked, and still leave us anonymous. Anonymous browsing of a course
+        shows only its free preview lectures, which looks like a successful but
+        oddly small download.
+        """
+        self.browser.get(course_url)
         self.browser.handle_cloudflare_if_present()
-        self.login(settings.email, settings.password)
+
+        probe = min(3, self.settings.timeout)
+        signed_out = self.browser.find_first(LOGGED_OUT_SELECTORS, timeout=probe)
+        signed_in = self.browser.find_first(LOGGED_IN_SELECTORS, timeout=probe)
+
+        if signed_in is not None:
+            logger.info("Confirmed an authenticated session")
+            return True
+
+        if signed_out is not None or looks_like_login_page(self.browser.current_url):
+            raise LoginError(
+                "The browser is not logged in: "
+                f"{self.browser.current_url!r} still offers a way to sign in.\n"
+                "  Only free preview lectures are visible to an anonymous "
+                "visitor, so the download would silently be incomplete.\n"
+                "  If your school uses 'Log in with Teachable', a social login, "
+                "or any single sign-on, the email/password form on the page is "
+                "not the one you use. Log in yourself instead:\n"
+                f"    --man_login_url '{course_url}'\n"
+                "  That opens a browser, waits for you to sign in however you "
+                "normally do, and starts downloading once you reach that page."
+            )
+
+        logger.warning(
+            "Could not positively confirm the session on %s. Continuing, but if "
+            "only a few lectures are found, you are probably not logged in.",
+            self.browser.current_url,
+        )
+        return False
 
     def _manual_login(self, start_url, man_login_url):
+        """Wait for a human to sign in, however their school does it.
+
+        This is the escape hatch for schools where the automated form does not
+        apply at all: "Log in with Teachable", a social login, or any single
+        sign-on. Nothing here touches credentials -- the person signs in in the
+        browser window and we simply wait for a session to appear.
+        """
         self.browser.get(start_url)
-        logger.info("Waiting for you to log in manually; target url: %s", man_login_url)
-        while True:
+
+        logger.info(
+            "Waiting for you to log in. Sign in however you normally do in the "
+            "browser window that just opened."
+        )
+        if man_login_url != start_url:
+            logger.info("Downloading starts once you reach: %s", man_login_url)
+
+        deadline = time.time() + self.settings.manual_login_timeout
+        while time.time() < deadline:
+            time.sleep(3)
             self.browser.ensure_alive()
             current = self.browser.current_url
+
             if current == man_login_url or current.startswith(man_login_url):
-                logger.info("Reached %s, continuing", man_login_url)
+                logger.info("Reached %s", man_login_url)
                 return
-            logger.info("Still waiting. Current url: %s", current)
-            time.sleep(3)
+
+            # An SSO round trip often lands somewhere slightly different from
+            # the URL that was asked for, so a live session counts too.
+            if self.browser.find_first(LOGGED_IN_SELECTORS, timeout=0) is not None:
+                logger.info("Detected a signed-in session at %s", current)
+                return
+
+            logger.debug("Still waiting. Current url: %s", current)
+
+        raise LoginError(
+            f"Gave up waiting for a manual login after "
+            f"{self.settings.manual_login_timeout:.0f}s. Raise the limit with "
+            "--manual-login-timeout if you need longer."
+        )
 
     def find_login(self, course_url):
         logger.info("Trying to find the login page")

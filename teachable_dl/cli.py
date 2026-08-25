@@ -39,7 +39,15 @@ def build_parser():
     login.add_argument("--login_url", "--login-url", dest="login_url",
                        help="Direct URL of the sign-in page, if it cannot be found automatically")
     login.add_argument("--man_login_url", "--man-login-url", dest="man_login_url",
-                       help="Log in by hand; downloading starts once this URL is reached")
+                       help="Log in by hand and start downloading once this URL is "
+                            "reached. Use this when your school signs you in with "
+                            "'Log in with Teachable', a social login, or any SSO: "
+                            "the email/password form on the page is not the one you "
+                            "use, and nothing here ever sees your credentials. "
+                            "Passing the course URL itself works well.")
+    login.add_argument("--manual-login-timeout", type=float, default=600.0,
+                       metavar="SECONDS",
+                       help="How long to wait for a manual login (default: 600)")
 
     output = parser.add_argument_group("output")
     output.add_argument("-o", "--output-dir", default=os.path.join(os.getcwd(), "courses"),
@@ -173,6 +181,7 @@ def settings_from_args(args, email, password, totp_secret):
         totp_secret=totp_secret,
         login_url=args.login_url,
         man_login_url=args.man_login_url,
+        manual_login_timeout=args.manual_login_timeout,
         output_dir=os.path.abspath(args.output_dir),
         ascii_filenames=args.ascii_filenames,
         stealth=not args.no_stealth,

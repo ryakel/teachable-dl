@@ -285,13 +285,21 @@ def main(argv=None):
         return 1
 
     email, password, totp_secret = resolve_credentials(args)
-    if not (args.man_login_url or args.cookies_file or args.cookies_from_browser) \
-            and not (email and password):
+    # A real browser profile is itself a way in: it already holds the session.
+    have_session = (
+        args.man_login_url
+        or args.cookies_file
+        or args.cookies_from_browser
+        or args.chrome_profile
+    )
+    if not have_session and not (email and password):
         logger.error(
             "No way to authenticate. Choose one:\n"
             "  --email/--password (or TEACHABLE_EMAIL / TEACHABLE_PASSWORD)\n"
             "  --cookies FILE or --cookies-from-browser chrome, to reuse a "
             "session you already have\n"
+            "  --chrome-profile, to drive the Chrome profile you are already "
+            "signed in to\n"
             "  --man_login_url URL, to sign in by hand in the browser window"
         )
         return 1

@@ -180,3 +180,25 @@ def test_stealth_defaults_on_and_can_be_disabled():
     """--no-stealth trades Cloudflare handling for not needing Rosetta 2."""
     assert settings_for().stealth is True
     assert settings_for("--no-stealth").stealth is False
+
+
+def test_a_real_browser_profile_counts_as_authentication():
+    """--chrome-profile *is* the credential: the profile already holds the
+    session, so demanding an email and password on top of it blocked the one
+    route that needs neither."""
+    for extra in (["--chrome-profile"], ["--chrome-profile", "/tmp/p"]):
+        args = parse("--url", "https://x.teachable.com/courses/enrolled/1", *extra)
+        have_session = (
+            args.man_login_url or args.cookies_file
+            or args.cookies_from_browser or args.chrome_profile
+        )
+        assert have_session, f"{extra} should satisfy the credential check"
+
+
+def test_no_authentication_at_all_is_still_refused():
+    args = parse("--url", "https://x.teachable.com/courses/enrolled/1")
+    have_session = (
+        args.man_login_url or args.cookies_file
+        or args.cookies_from_browser or args.chrome_profile
+    )
+    assert not have_session

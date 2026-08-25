@@ -174,7 +174,7 @@ class Authenticator:
             self._authenticate_with_cookies(course_url)
         elif settings.man_login_url:
             self._manual_login(course_url, settings.man_login_url)
-        else:
+        elif settings.email and settings.password:
             if settings.login_url:
                 self.browser.get(settings.login_url)
             else:
@@ -183,6 +183,12 @@ class Authenticator:
             self.browser.handle_cloudflare_if_present()
             self.follow_sso_if_offered()
             self.login(settings.email, settings.password)
+        else:
+            # Driving a real browser profile: the session is already there, so
+            # there is nothing to log in to. Just go to the course.
+            logger.info("Using the session already in this browser profile")
+            self.browser.get(course_url)
+            self.browser.handle_cloudflare_if_present()
 
         # Submitting a form and seeing no error is not proof of a session.
         # Without this check the run continued unauthenticated, scraped only the

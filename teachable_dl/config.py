@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+#: Kept only as a documented fallback; not used unless the browser refuses to
+#: report its own user agent.
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/120.0.0.0 Safari/537.36"
@@ -41,7 +43,12 @@ class Settings:
     #: Longer gives Cloudflare's check more time to settle before we reattach.
     uc_reconnect_time: float = 4.0
     headless: bool = False
-    user_agent: str = DEFAULT_USER_AGENT
+    #: ``None`` means "whatever this Chrome really is". Forcing a fixed string
+    #: is actively harmful: a current Chrome announcing an old version is a bot
+    #: signal in itself, and Cloudflare binds its clearance cookie to the exact
+    #: user agent that earned it, so an override invalidates a session imported
+    #: from a real browser. Set one only when you have a specific reason.
+    user_agent: str | None = None
     timeout: int = 10
     max_session_restarts: int = 3
 

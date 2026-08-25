@@ -15,6 +15,7 @@ live session for as long as it lasts.
 
 import logging
 import os
+import sys
 from http.cookiejar import Cookie
 from urllib.parse import urlparse
 
@@ -73,13 +74,71 @@ def load_from_browser(spec):
     try:
         return extract_cookies_from_browser(name, profile.strip() or None)
     except Exception as exc:
-        raise CookieError(
-            f"Could not read cookies from {name}: {exc}\\n"
-            "  On macOS the browser's cookie store is encrypted, so this may "
-            "prompt for Keychain access, and Chrome must not be running.\\n"
-            "  Exporting a cookies.txt from a browser extension and passing "
-            "--cookies avoids that entirely."
-        ) from exc
+        hint = "\n".join(
+            [
+                f"Could not read cookies from {name}: {exc}",
+                "",
+                "  Most likely that browser has no profile on this machine yet -- a",
+                "  browser installed just for this tool has never stored a login.",
+                "  Use the browser you actually signed in with.",
+                f"  Detected on this machine: {describe_available_browsers()}",
+                "",
+                "  A non-default profile is given as browser:profile, for example",
+                "  --cookies-from-browser 'chrome:Profile 1'.",
+                "",
+                "  On macOS the cookie store is encrypted, so reading it may prompt",
+                "  for Keychain access and needs the browser closed. Exporting a",
+                "  cookies.txt from a browser extension and passing --cookies",
+                "  avoids both.",
+            ]
+        )
+        raise CookieError(hint) from exc
+
+
+#: Where each browser keeps its profiles on this platform, for a better error.
+def _browser_data_dirs():
+    home = os.path.expanduser("~")
+    if sys.platform == "darwin":
+        support = os.path.join(home, "Library", "Application Support")
+        return {
+            "chrome": os.path.join(support, "Google", "Chrome"),
+            "chromium": os.path.join(support, "Chromium"),
+            "brave": os.path.join(support, "BraveSoftware", "Brave-Browser"),
+            "edge": os.path.join(support, "Microsoft Edge"),
+            "vivaldi": os.path.join(support, "Vivaldi"),
+            "opera": os.path.join(support, "com.operasoftware.Opera"),
+            "firefox": os.path.join(support, "Firefox"),
+            "safari": os.path.join(home, "Library", "Cookies"),
+        }
+    if sys.platform.startswith("win"):
+        local = os.environ.get("LOCALAPPDATA", "")
+        roaming = os.environ.get("APPDATA", "")
+        return {
+            "chrome": os.path.join(local, "Google", "Chrome", "User Data"),
+            "chromium": os.path.join(local, "Chromium", "User Data"),
+            "brave": os.path.join(local, "BraveSoftware", "Brave-Browser", "User Data"),
+            "edge": os.path.join(local, "Microsoft", "Edge", "User Data"),
+            "firefox": os.path.join(roaming, "Mozilla", "Firefox"),
+        }
+    config = os.path.join(home, ".config")
+    return {
+        "chrome": os.path.join(config, "google-chrome"),
+        "chromium": os.path.join(config, "chromium"),
+        "brave": os.path.join(config, "BraveSoftware", "Brave-Browser"),
+        "firefox": os.path.join(home, ".mozilla", "firefox"),
+    }
+
+
+def available_browsers():
+    """Browsers that actually have a profile directory on this machine."""
+    return sorted(
+        name for name, path in _browser_data_dirs().items() if os.path.isdir(path)
+    )
+
+
+def describe_available_browsers():
+    found = available_browsers()
+    return ", ".join(found) if found else "none found"
 
 
 def load_cookie_jar(settings):

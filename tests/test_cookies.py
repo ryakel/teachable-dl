@@ -105,3 +105,29 @@ def test_an_unknown_browser_lists_the_supported_ones():
         load_cookie_jar(Settings(cookies_from_browser="nyetscape"))
     message = str(caught.value)
     assert "chrome" in message and "firefox" in message
+
+
+def test_the_browser_error_names_what_is_actually_installed():
+    """A browser installed just for this tool has no profile, which is the
+    likeliest cause and the least obvious from yt-dlp's own message."""
+    from teachable_dl.cookies import describe_available_browsers, load_from_browser
+
+    with pytest.raises(CookieError) as caught:
+        load_from_browser("chrome")
+    message = str(caught.value)
+
+    assert "\\n" not in message, "escaped newline leaked into the message"
+    assert "\n" in message, "the guidance should be on its own lines"
+    assert "Detected on this machine" in message
+    assert describe_available_browsers() in message
+    assert "browser:profile" in message
+
+
+def test_available_browsers_only_reports_real_profile_directories():
+    from teachable_dl.cookies import available_browsers
+
+    import os
+    from teachable_dl.cookies import _browser_data_dirs
+
+    for name in available_browsers():
+        assert os.path.isdir(_browser_data_dirs()[name])

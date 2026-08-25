@@ -165,7 +165,9 @@ class Browser:
             self.settings.headless,
             self.settings.stealth,
         )
-        kwargs = {"uc": bool(self.settings.stealth), "agent": self.settings.user_agent}
+        kwargs = {"uc": bool(self.settings.stealth)}
+        if self.settings.user_agent:
+            kwargs["agent"] = self.settings.user_agent
         if self.settings.headless:
             # ``headless2`` keeps a real renderer, which undetected-chromedriver
             # and Cloudflare's challenge both need. Plain ``headless`` fails the
@@ -201,7 +203,29 @@ class Browser:
                 ) from exc
             raise
         self.driver.set_page_load_timeout(max(self.settings.timeout * 6, 60))
+        self._adopt_real_user_agent()
         return self.driver
+
+    def _adopt_real_user_agent(self):
+        """Use the browser's own user agent for every request we make.
+
+        Requests made outside the browser -- attachments, video fragments -- have
+        to look like they came from it. Ask the browser what it actually is
+        rather than asserting a version we hardcoded, which drifts out of date
+        and breaks any Cloudflare clearance tied to the real one.
+        """
+        if self.settings.user_agent:
+            return
+        try:
+            agent = self.driver.execute_script("return navigator.userAgent;")
+        except Exception as exc:
+            logger.debug("Could not read the browser's user agent: %s", exc)
+            agent = None
+
+        from .config import DEFAULT_USER_AGENT
+
+        self.settings.user_agent = agent or DEFAULT_USER_AGENT
+        logger.debug("Using user agent: %s", self.settings.user_agent)
 
     def quit(self):
         if self.driver is None:

@@ -95,8 +95,12 @@ def build_parser():
                               "loop.")
     browser.add_argument("--headless", action="store_true",
                          help="Run the browser headless so it stops stealing focus")
-    browser.add_argument("--user-agent", default=DEFAULT_USER_AGENT,
-                         help="User agent for the browser and media requests")
+    browser.add_argument("--user-agent", default=None,
+                         help="Override the user agent. By default the browser's "
+                              "own is used and reused for media requests, which is "
+                              "both more honest and necessary for a Cloudflare "
+                              "clearance cookie to stay valid. Setting this can "
+                              "cause challenges rather than avoid them.")
     browser.add_argument("-t", "--timeout", type=int, default=10,
                          help="Seconds to wait for page elements (default: 10)")
     browser.add_argument("--max-session-restarts", type=int, default=3,

@@ -180,7 +180,20 @@ class Browser:
             self.settings.headless,
             self.settings.stealth,
         )
-        kwargs = {"uc": bool(self.settings.stealth)}
+        stealth = bool(self.settings.stealth)
+        if stealth and self.settings.user_data_dir:
+            # Undetected mode manages its own throwaway profile, and handing it
+            # a real one leaves Chrome sitting on its start page doing nothing.
+            # A real profile is the better disguise anyway: it carries the
+            # history and the Cloudflare clearance a fresh one has to earn.
+            logger.info(
+                "Using a real Chrome profile, so undetected mode is off: the "
+                "profile already carries whatever clearance the site issued."
+            )
+            stealth = False
+            self.settings.stealth = False
+
+        kwargs = {"uc": stealth}
         if self.settings.user_agent:
             kwargs["agent"] = self.settings.user_agent
 
@@ -199,8 +212,10 @@ class Browser:
             kwargs["headless2"] = True
         else:
             kwargs["headed"] = True
+        logger.info("Launching Chrome; this can take a moment on first run")
         try:
             self.driver = Driver(**kwargs)
+            logger.info("Chrome is up")
         except Exception as exc:
             # SeleniumBase happily downloads a matching chromedriver and only
             # then reports "Chrome not found!", which reads like a driver
@@ -367,6 +382,7 @@ class Browser:
         verification". SeleniumBase's UC mode can drop the connection across the
         navigation and reattach afterwards, which is what gets through.
         """
+        logger.debug("Navigating to %s", url)
         if self.settings.stealth and hasattr(self.driver, "uc_open_with_reconnect"):
             try:
                 self.driver.uc_open_with_reconnect(url, self.settings.uc_reconnect_time)

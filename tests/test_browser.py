@@ -414,3 +414,54 @@ def test_that_error_is_not_raised_when_no_profile_was_requested(monkeypatch):
     with pytest.raises(Exception) as caught:
         browser.start()
     assert not isinstance(caught.value, BrowserProfileInUseError)
+
+
+def test_a_real_profile_turns_undetected_mode_off(monkeypatch):
+    """UC mode manages its own throwaway profile; handing it a real one leaves
+    Chrome sitting on its start page doing nothing at all."""
+    from teachable_dl.browser import Browser
+    from teachable_dl.config import Settings
+
+    seen = {}
+
+    class FakeDriver:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def set_page_load_timeout(self, value):
+            pass
+
+        def execute_script(self, script):
+            return "UA/1.0"
+
+    monkeypatch.setattr("teachable_dl.browser.Driver", FakeDriver)
+    browser = Browser.__new__(Browser)
+    browser.settings = Settings(user_data_dir="/tmp/profile", stealth=True)
+    browser.start()
+
+    assert seen["uc"] is False
+    # Navigation must follow suit, or it would still try the UC reconnect path.
+    assert browser.settings.stealth is False
+
+
+def test_without_a_profile_undetected_mode_is_untouched(monkeypatch):
+    from teachable_dl.browser import Browser
+    from teachable_dl.config import Settings
+
+    seen = {}
+
+    class FakeDriver:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def set_page_load_timeout(self, value):
+            pass
+
+        def execute_script(self, script):
+            return "UA/1.0"
+
+    monkeypatch.setattr("teachable_dl.browser.Driver", FakeDriver)
+    browser = Browser.__new__(Browser)
+    browser.settings = Settings(stealth=True)
+    browser.start()
+    assert seen["uc"] is True

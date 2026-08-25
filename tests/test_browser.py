@@ -325,3 +325,92 @@ def test_a_headless_run_cannot_ask_a_human_to_click():
     driver.uc_gui_click_captcha = lambda: (_ for _ in ()).throw(Exception("no gui"))
     browser = make_browser_with(driver, headless=True, stealth=True)
     assert browser.bypass_cloudflare(attempts=1) is False
+
+
+# ------------------------------------------------------- real Chrome profile
+
+def test_by_default_no_profile_is_requested(monkeypatch):
+    """Undetected mode's own throwaway profile stays the default."""
+    from teachable_dl.browser import Browser
+    from teachable_dl.config import Settings
+
+    seen = {}
+
+    class FakeDriver:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def set_page_load_timeout(self, value):
+            pass
+
+        def execute_script(self, script):
+            return "UA/1.0"
+
+    monkeypatch.setattr("teachable_dl.browser.Driver", FakeDriver)
+    browser = Browser.__new__(Browser)
+    browser.settings = Settings()
+    browser.start()
+    assert "user_data_dir" not in seen
+
+
+def test_a_real_profile_is_passed_through_and_expanded(monkeypatch):
+    """A fresh profile has no cookies and no login, which is why an automated
+    browser sees a school's public pages while the person's own browser is
+    signed in."""
+    from teachable_dl.browser import Browser
+    from teachable_dl.config import Settings
+
+    seen = {}
+
+    class FakeDriver:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def set_page_load_timeout(self, value):
+            pass
+
+        def execute_script(self, script):
+            return "UA/1.0"
+
+    monkeypatch.setattr("teachable_dl.browser.Driver", FakeDriver)
+    browser = Browser.__new__(Browser)
+    browser.settings = Settings(user_data_dir="~/Chrome", profile_directory="Profile 1")
+    browser.start()
+
+    assert not seen["user_data_dir"].startswith("~")
+    assert seen["chromium_arg"] == "--profile-directory=Profile 1"
+
+
+def test_a_profile_already_open_says_to_quit_chrome(monkeypatch):
+    """Two processes cannot share one profile, and the raw error does not say so."""
+    from teachable_dl.browser import Browser, BrowserProfileInUseError
+    from teachable_dl.config import Settings
+
+    monkeypatch.setattr(
+        "teachable_dl.browser.Driver",
+        lambda **k: (_ for _ in ()).throw(
+            Exception("user data directory is already in use")
+        ),
+    )
+    browser = Browser.__new__(Browser)
+    browser.settings = Settings(user_data_dir="/tmp/profile")
+
+    with pytest.raises(BrowserProfileInUseError) as caught:
+        browser.start()
+    assert "Quit Chrome" in str(caught.value)
+
+
+def test_that_error_is_not_raised_when_no_profile_was_requested(monkeypatch):
+    """Without --chrome-profile the same message means something else."""
+    from teachable_dl.browser import Browser, BrowserProfileInUseError
+    from teachable_dl.config import Settings
+
+    monkeypatch.setattr(
+        "teachable_dl.browser.Driver",
+        lambda **k: (_ for _ in ()).throw(Exception("user data directory is already in use")),
+    )
+    browser = Browser.__new__(Browser)
+    browser.settings = Settings()
+    with pytest.raises(Exception) as caught:
+        browser.start()
+    assert not isinstance(caught.value, BrowserProfileInUseError)

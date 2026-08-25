@@ -81,6 +81,17 @@ def build_parser():
                              "course directory and exit. Does not open a browser.")
 
     browser = parser.add_argument_group("browser")
+    browser.add_argument("--chrome-profile", nargs="?", const="auto", metavar="PATH",
+                         help="Drive your real Chrome profile instead of the empty "
+                              "throwaway one. Pass the flag alone to use Chrome's "
+                              "default location, or give a path. Chrome must be fully "
+                              "quit first, since two processes cannot share a profile. "
+                              "This is usually the simplest fix when the automated "
+                              "browser is not logged in but yours is.")
+    browser.add_argument("--chrome-profile-name", metavar="NAME",
+                         help="Which profile inside that directory to use, e.g. "
+                              "'Default' or 'Profile 1'. Defaults to whatever Chrome "
+                              "opens itself.")
     browser.add_argument("--no-stealth", action="store_true",
                          help="Use a plain Chrome driver instead of SeleniumBase's "
                               "undetected (UC) mode. UC mode is what gets past a "
@@ -147,6 +158,17 @@ def build_parser():
     return parser
 
 
+def _resolve_chrome_profile(value):
+    """``--chrome-profile`` with no path means Chrome's usual location."""
+    if not value:
+        return None
+    if value == "auto":
+        from .browser import default_chrome_profile
+
+        return default_chrome_profile()
+    return value
+
+
 def configure_logging(verbosity):
     # The old default was WARNING, which hid all download progress. INFO is a
     # better default for a tool whose whole job is a long-running download.
@@ -201,6 +223,8 @@ def settings_from_args(args, email, password, totp_secret):
         cookies_from_browser=args.cookies_from_browser,
         output_dir=os.path.abspath(args.output_dir),
         ascii_filenames=args.ascii_filenames,
+        user_data_dir=_resolve_chrome_profile(args.chrome_profile),
+        profile_directory=args.chrome_profile_name,
         stealth=not args.no_stealth,
         uc_reconnect_time=args.uc_reconnect_time,
         headless=args.headless,
@@ -275,7 +299,11 @@ def main(argv=None):
     settings = settings_from_args(args, email, password, totp_secret)
 
     # Imported here so that --help and --rewrite-only work without a browser stack.
-    from .browser import BrowserNotFoundError, MissingRosettaError
+    from .browser import (
+        BrowserNotFoundError,
+        BrowserProfileInUseError,
+        MissingRosettaError,
+    )
     from .downloader import CourseDownloader
 
     downloader = None
@@ -285,7 +313,8 @@ def main(argv=None):
     except KeyboardInterrupt:
         logger.error("Interrupted")
         return 130
-    except (BrowserNotFoundError, MissingRosettaError) as exc:
+    except (BrowserNotFoundError, BrowserProfileInUseError,
+            MissingRosettaError) as exc:
         # A missing browser is a setup problem, not a crash: no stack trace.
         logger.error("%s", exc)
         return 1

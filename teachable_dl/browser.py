@@ -16,6 +16,7 @@ rest of the run.
 
 import base64
 import logging
+import os
 import sys
 import time
 
@@ -72,6 +73,20 @@ class BrowserNotFoundError(RuntimeError):
 
 class MissingRosettaError(RuntimeError):
     """Apple Silicon Mac without Rosetta 2, which UC Mode needs."""
+
+
+class BrowserProfileInUseError(RuntimeError):
+    """The requested Chrome profile is open in another process."""
+
+
+def default_chrome_profile():
+    """Where Chrome keeps its profiles on this platform."""
+    home = os.path.expanduser("~")
+    if sys.platform == "darwin":
+        return os.path.join(home, "Library", "Application Support", "Google", "Chrome")
+    if sys.platform.startswith("win"):
+        return os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "User Data")
+    return os.path.join(home, ".config", "google-chrome")
 
 
 #: SeleniumBase's undetected mode uses the x86_64 chromedriver on macOS even on
@@ -168,6 +183,15 @@ class Browser:
         kwargs = {"uc": bool(self.settings.stealth)}
         if self.settings.user_agent:
             kwargs["agent"] = self.settings.user_agent
+
+        # Undetected mode otherwise starts a throwaway profile: no cookies, no
+        # history, no login. Pointing it at a real profile is what makes the
+        # automated browser the same browser the person is already signed in to.
+        if self.settings.user_data_dir:
+            kwargs["user_data_dir"] = os.path.expanduser(self.settings.user_data_dir)
+            logger.info("Using the Chrome profile at %s", kwargs["user_data_dir"])
+        if self.settings.profile_directory:
+            kwargs["chromium_arg"] = f"--profile-directory={self.settings.profile_directory}"
         if self.settings.headless:
             # ``headless2`` keeps a real renderer, which undetected-chromedriver
             # and Cloudflare's challenge both need. Plain ``headless`` fails the
@@ -193,6 +217,21 @@ class Browser:
                     "  Undetected mode is only needed to get past a Cloudflare "
                     "challenge. Many schools have none, so try --no-stealth "
                     "first if you would rather not install Rosetta.\n"
+                    f"  (original error: {exc})"
+                ) from exc
+            if self.settings.user_data_dir and (
+                "user data directory" in lowered
+                or "already in use" in lowered
+                or "cannot create default profile" in lowered
+                or "profile appears to be in use" in lowered
+            ):
+                raise BrowserProfileInUseError(
+                    "That Chrome profile is already open, and two processes "
+                    "cannot share one.\n"
+                    "  Quit Chrome completely (Cmd-Q, not just closing the "
+                    "window) and run this again.\n"
+                    "  To keep browsing while it downloads, copy the profile "
+                    "and point at the copy instead.\n"
                     f"  (original error: {exc})"
                 ) from exc
             if any(marker in lowered for marker in _MISSING_BROWSER_MARKERS):

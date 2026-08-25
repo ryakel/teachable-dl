@@ -25,6 +25,13 @@ class Settings:
     man_login_url: str | None = None
     #: How long to wait for a person to finish signing in by hand.
     manual_login_timeout: float = 600.0
+    #: Drive your real Chrome profile rather than the throwaway one that
+    #: undetected mode creates. A fresh profile has no cookies and no login,
+    #: which is why an automated browser lands on a school's public pages while
+    #: your own browser is signed in.
+    user_data_dir: str | None = None
+    profile_directory: str | None = None
+
     #: Reuse an existing browser session instead of logging in at all.
     cookies_file: str | None = None
     cookies_from_browser: str | None = None
